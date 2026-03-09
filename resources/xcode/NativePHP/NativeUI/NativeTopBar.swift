@@ -17,6 +17,12 @@ struct NativeTopBar: UIViewRepresentable {
         navigationBar.scrollEdgeAppearance = appearance
         navigationBar.compactAppearance = appearance
 
+        // RTL: Force right-to-left layout on the navigation bar.
+        // This flips the positions of leftBarButtonItem (moves to right) and
+        // rightBarButtonItems (move to left), and right-aligns the title — all
+        // of which is correct for Arabic/RTL navigation bars.
+        navigationBar.semanticContentAttribute = .forceRightToLeft
+
         // Create navigation item
         let navItem = UINavigationItem()
         navigationBar.items = [navItem]
@@ -35,14 +41,15 @@ struct NativeTopBar: UIViewRepresentable {
 
     func updateUIView(_ navigationBar: UINavigationBar, context: Context) {
         guard let topBarData = uiState.topBarData,
-              let navItem = navigationBar.items?.first else { return }
+        let navItem = navigationBar.items?.first else { return }
 
         // Update title
         if let subtitle = topBarData.subtitle {
             // Create attributed title with subtitle
             let titleLabel = UILabel()
             titleLabel.numberOfLines = 2
-            titleLabel.textAlignment = .center
+            // RTL: .natural aligns text to the right in RTL locales automatically.
+            titleLabel.textAlignment = .natural
 
             let titleText = NSMutableAttributedString()
             let textColor = topBarData.textColor.flatMap { UIColor(hex: $0) } ?? UIColor.label
@@ -69,7 +76,10 @@ struct NativeTopBar: UIViewRepresentable {
             navItem.title = topBarData.title
         }
 
-        // Update left bar button (navigation icon)
+        // Update left bar button (navigation/hamburger icon).
+        // RTL note: with semanticContentAttribute = .forceRightToLeft set in makeUIView,
+        // leftBarButtonItem is visually rendered on the RIGHT side of the bar —
+        // which is the correct leading position for RTL Arabic navigation.
         if topBarData.showNavigationIcon == true && uiState.hasSideNav() {
             let button = UIBarButtonItem(
                 image: UIImage(systemName: "line.3.horizontal"),
@@ -82,7 +92,9 @@ struct NativeTopBar: UIViewRepresentable {
             navItem.leftBarButtonItem = nil
         }
 
-        // Update right bar buttons (actions)
+        // Update right bar buttons (actions).
+        // RTL note: rightBarButtonItems will appear on the LEFT side visually, which is
+        // the correct trailing position for action buttons in RTL navigation bars.
         if let actions = topBarData.children, !actions.isEmpty {
             var barButtonItems: [UIBarButtonItem] = []
 
@@ -121,12 +133,12 @@ struct NativeTopBar: UIViewRepresentable {
         }
 
         if let bgColorHex = topBarData.backgroundColor,
-           let bgColor = UIColor(hex: bgColorHex) {
+        let bgColor = UIColor(hex: bgColorHex) {
             appearance.backgroundColor = bgColor
         }
 
         if let textColorHex = topBarData.textColor,
-           let textColor = UIColor(hex: textColorHex) {
+        let textColor = UIColor(hex: textColorHex) {
             appearance.titleTextAttributes = [.foregroundColor: textColor]
             appearance.largeTitleTextAttributes = [.foregroundColor: textColor]
             // Also set the button tint color to match
@@ -164,7 +176,7 @@ struct NativeTopBar: UIViewRepresentable {
 
         @objc func actionTapped(_ sender: UIBarButtonItem) {
             guard let actionId = sender.accessibilityIdentifier,
-                  let url = actionUrls[actionId] else {
+            let url = actionUrls[actionId] else {
                 return
             }
 

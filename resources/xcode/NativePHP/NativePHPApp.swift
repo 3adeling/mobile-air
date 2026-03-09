@@ -81,22 +81,30 @@ struct NativePHPApp: App {
                 // It renders underneath the splash until WebView finishes loading
                 if appState.isReadyToLoad {
                     ContentView()
+                        .environment(\.layoutDirection, .rightToLeft)
+                        .environment(\.locale, Locale(identifier: "ar"))
                 }
 
                 // Splash overlays until WebView finishes loading (Phase 3)
                 if !appState.isInitialized {
                     SplashView()
-                        .transition(.opacity)
-                        .onAppear {
-                            // Phase 1: Start deferred initialization on a background thread
-                            // This runs AFTER the splash view is visible, avoiding watchdog timeout
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                performDeferredInitialization()
-                            }
+                    .transition(.opacity)
+                    .onAppear {
+                        // Phase 1: Start deferred initialization on a background thread
+                        // This runs AFTER the splash view is visible, avoiding watchdog timeout
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            performDeferredInitialization()
                         }
+                    }
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: appState.isInitialized)
+            // RTL: Apply right-to-left layout direction to the entire SwiftUI view hierarchy.
+            // This covers NativeSideNav, SideNavItemView, SideNavGroupView, and all
+            // other SwiftUI-based NativeUI components. UIKit components (UITabBar,
+            // UINavigationBar) are handled separately via UIView.appearance() in AppDelegate.
+            .environment(\.layoutDirection, .rightToLeft)
+            .environment(\.locale, Locale(identifier: "ar"))
             .onOpenURL { url in
                 // Only handle if not already handled by AppDelegate during cold start
                 if !DeepLinkRouter.shared.hasPendingURL() {
@@ -142,7 +150,7 @@ struct NativePHPApp: App {
         let envPath = URL(fileURLWithPath: appPath).appendingPathComponent(".env")
 
         guard FileManager.default.fileExists(atPath: envPath.path),
-              let envContent = try? String(contentsOf: envPath, encoding: .utf8) else {
+        let envContent = try? String(contentsOf: envPath, encoding: .utf8) else {
             DebugLogger.shared.log("⚙️ No .env file found, using default start URL")
             return "/"
         }
@@ -150,11 +158,11 @@ struct NativePHPApp: App {
         // Use regex to find NATIVEPHP_START_URL value
         let pattern = #"NATIVEPHP_START_URL\s*=\s*([^\r\n]+)"#
         if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: envContent, range: NSRange(envContent.startIndex..., in: envContent)),
-           let valueRange = Range(match.range(at: 1), in: envContent) {
+        let match = regex.firstMatch(in: envContent, range: NSRange(envContent.startIndex..., in: envContent)),
+        let valueRange = Range(match.range(at: 1), in: envContent) {
             var value = String(envContent[valueRange])
-                .trimmingCharacters(in: .whitespaces)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
 
             if !value.isEmpty {
                 // Ensure path starts with /
@@ -174,9 +182,9 @@ struct NativePHPApp: App {
         let caPath = Bundle.main.path(forResource: "cacert", ofType: "pem") ?? "Path not found"
 
         let phpIni = """
-        curl.cainfo="\(caPath)"
-        openssl.cafile="\(caPath)"
-        """
+                     curl.cainfo="\(caPath)"
+                     openssl.cafile="\(caPath)"
+                     """
 
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let path = supportDir.appendingPathComponent("php.ini")
@@ -196,7 +204,7 @@ struct NativePHPApp: App {
         let fileManager = FileManager.default
 
         let databaseFileURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("database/database.sqlite")
+        .appendingPathComponent("database/database.sqlite")
 
         if !fileManager.fileExists(atPath: databaseFileURL.path) {
             // Create an empty SQLite file
@@ -286,12 +294,12 @@ struct NativePHPApp: App {
 
         for (header, value) in request.headers {
             let formattedKey = "HTTP_" + header
-                .replacingOccurrences(of: "-", with: "_")
-                .uppercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .uppercased()
 
             // Convert Swift strings to C strings
             guard let cKey = formattedKey.cString(using: .utf8),
-                  let cValue = value.cString(using: .utf8) else {
+            let cValue = value.cString(using: .utf8) else {
                 print("Failed to convert \(header) or its value to C string.")
                 continue
             }
@@ -375,8 +383,8 @@ struct NativePHPApp: App {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
         if status == errSecSuccess,
-           let data = result as? Data,
-           let existingKey = String(data: data, encoding: .utf8) {
+        let data = result as? Data,
+        let existingKey = String(data: data, encoding: .utf8) {
             DebugLogger.shared.log("🔑 Retrieved existing APP_KEY from Keychain")
             return existingKey
         }

@@ -27,6 +27,10 @@ struct NativeUITabBar: UIViewRepresentable {
             tabBar.scrollEdgeAppearance = appearance
         }
 
+        // RTL: Force right-to-left layout so tab items are ordered right-to-left,
+        // matching the natural reading direction for Arabic apps.
+        tabBar.semanticContentAttribute = .forceRightToLeft
+
         // Apply custom active color (tint color for selected items)
         if let activeColorHex = activeColor, let color = UIColor(hex: activeColorHex) {
             tabBar.tintColor = color
@@ -241,7 +245,7 @@ struct NativeUITabBar: UIViewRepresentable {
             }
 
             guard let index = tabBar.items?.firstIndex(of: item),
-                  index < items.count else { return }
+            index < items.count else { return }
 
             let selectedItem = items[index]
 
@@ -270,7 +274,7 @@ struct NativeBottomNavigation: View {
 
     var body: some View {
         if let bottomNavData = uiState.bottomNavData,
-           let items = bottomNavData.children, !items.isEmpty {
+        let items = bottomNavData.children, !items.isEmpty {
 
             if #available(iOS 26.0, *) {
                 // iOS 26+: Tab bar with Liquid Glass effect
@@ -346,8 +350,8 @@ struct NativeBottomNavigation: View {
     /// Load URL for a specific tab by finding the item and passing its raw URL
     private func loadTabURL(tabId: String) {
         guard let bottomNavData = uiState.bottomNavData,
-              let items = bottomNavData.children,
-              let item = items.first(where: { $0.data.id == tabId }) else {
+        let items = bottomNavData.children,
+        let item = items.first(where: { $0.data.id == tabId }) else {
             print("❌ No item found for tab: \(tabId)")
             return
         }
