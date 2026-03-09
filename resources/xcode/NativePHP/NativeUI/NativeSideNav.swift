@@ -2,41 +2,30 @@ import SwiftUI
 
 /// Bidirectional Side Navigation — supports both LTR and RTL layouts.
 ///
-/// Reads `layoutDirection` from the SwiftUI environment and adapts automatically:
-/// - LTR: drawer slides in from the LEFT edge
-/// - RTL: drawer slides in from the RIGHT edge
+/// RTL: drawer slides in from the RIGHT edge (positive x hides it)
+/// LTR: drawer slides in from the LEFT edge (negative x hides it)
 ///
-/// All offset and gesture math is normalised using a `dir` multiplier:
-///   dir = -1  (LTR) → negative x hides drawer off-screen left
-///   dir = +1  (RTL) → positive x hides drawer off-screen right
+/// KEY: SwiftUI's offset(x:) uses SCREEN coordinates and does NOT flip for RTL.
+/// hiddenOffset is therefore direction-aware (positive for RTL, negative for LTR).
 ///
-/// slideOffset = 0                → drawer fully visible at its edge
-/// slideOffset = drawerWidth * dir → drawer fully hidden off-screen
+/// dragOffset is stored in LOGICAL space (positive = more open, 0 = closed extra).
+/// It is converted to screen coords only when computing drawerXOffset.
 struct NativeSideNavigation<Content: View>: View {
     @ObservedObject var uiState = NativeUIState.shared
-    private var isRTL: Bool { UIApplication.shared.userInterfaceLayoutDirection == .rightToLeft }
+
+    private var isRTL: Bool {
+        let language = Locale.preferredLanguages.first ?? "en"
+        return Locale.characterDirection(forLanguage: language) == .rightToLeft
+    }
+
     @State private var expandedGroups: Set<String> = []
-    @State private var dragOffset: CGFloat = 0
+    @State private var dragOffset: CGFloat = 0  // logical space: positive = opening
 
     let content: Content
     let onNavigate: (String) -> Void
 
     private let drawerWidthRatio: CGFloat = 0.85
     private let edgeSwipeThreshold: CGFloat = 30
-
-    /// +1 for RTL (drawer on right), -1 for LTR (drawer on left).
-    /// Multiplying any offset or velocity by this normalises direction math.
-    private var dir: CGFloat { isRTL ? 1 : -1 }
-
-    /// The physical edge the drawer appears on.
-    private var drawerEdge: Edge { isRTL ? .trailing : .leading }
-
-    /// Safe area inset on the drawer's side.
-    private func safeInset(_ geometry: GeometryProxy) -> CGFloat {
-        isRTL
-        ? geometry.safeAreaInsets.trailing
-        : geometry.safeAreaInsets.leading
-    }
 
     init(onNavigate: @escaping (String) -> Void, @ViewBuilder content: () -> Content) {
         self.onNavigate = onNavigate
@@ -45,85 +34,84 @@ struct NativeSideNavigation<Content: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let isLandscape = geometry.size.width > geometry.size.height
-            let drawerWidth = geometry.size.width * (isLandscape ? 0.4 : drawerWidthRatio)
-            let safeArea = safeInset(geometry)
+            let screenW = geometry.size.width
+            let screenH = geometry.size.height
+            let isLandscape = screenW > screenH
+            let drawerWidth = screenW * (isLandscape ? 0.4 : drawerWidthRatio)
 
-            // Hidden offset: moves drawer fully off-screen on its side.
-            // dir * (drawerWidth + safeArea + 10)
-            //   LTR → negative x → off-screen LEFT
-            //   RTL → positive x → off-screen RIGHT
-            let hiddenOffset = dir * (drawerWidth + safeArea + 10)
+            // All positioning uses ABSOLUTE screen coordinates via .position().
+            // This is immune to SwiftUI's layoutDirection flipping.
 
-            // Current drawer x position:
-            //   open:   0           (drawer at edge, fully visible)
-            //   closed: hiddenOffset (drawer off-screen)
-            let drawerXOffset: CGFloat = {
-                let base: CGFloat = uiState.shouldPresentSidebar ? 0 : hiddenOffset
-                return base + dragOffset
-            }()
+            // slideProgress: 0 = fully open, drawerWidth = fully hidden
+            let baseSlide: CGFloat = uiState.shouldPresentSidebar ? 0 : drawerWidth
+            let slideX: CGFloat = max(0, min(drawerWidth, baseSlide + dragOffset))
 
-            // Overlay opacity: 0 when hidden, 0.5 when fully open
+            // Drawer center X in screen coordinates:
+            //   RTL open:   screenW - drawerWidth/2  (right edge)
+            //   RTL closed: screenW + drawerWidth/2  (off-screen right)
+            //   LTR open:   drawerWidth/2            (left edge)
+            //   LTR closed: -drawerWidth/2           (off-screen left)
+            let openCenterX: CGFloat = isRTL
+                ? screenW - drawerWidth / 2
+                : drawerWidth / 2
+            let drawerCenterX: CGFloat = isRTL
+                ? openCenterX + slideX
+                : openCenterX - slideX
+            let centerY = screenH / 2
+
             let overlayOpacity: Double = {
-                let progress = 1 - abs(drawerXOffset) / drawerWidth
+                let progress = 1.0 - slideX / drawerWidth
                 return Double(max(0, min(0.5, progress * 0.5)))
             }()
 
-            // Swipe inward from the drawer's edge to open.
-            // Inward direction = opposite of dir:
-            //   LTR: swipe right (+) from left edge
-            //   RTL: swipe left  (-) from right edge
+            // ── Edge swipe to open ──────────────────────────────────────
+            // slideX goes from drawerWidth → 0 when opening.
+            // dragOffset must be NEGATIVE to reduce slideX.
+            //   RTL: swipe LEFT from right edge (translation negative) → dragOffset = translation ✓
+            //   LTR: swipe RIGHT from left edge (translation positive) → dragOffset = -translation ✓
             let edgeSwipeGesture = DragGesture(minimumDistance: 10)
             .onChanged { value in
-                // Must start from the correct physical edge
                 let atEdge = isRTL
-                ? value.startLocation.x > geometry.size.width - edgeSwipeThreshold
-                : value.startLocation.x < edgeSwipeThreshold
-
+                    ? value.startLocation.x > screenW - edgeSwipeThreshold
+                    : value.startLocation.x < edgeSwipeThreshold
                 guard atEdge else { return }
 
-                // Normalised translation: negative = inward (opening)
-                let norm = dir * value.translation.width
-                guard norm < 0 else { return }
-
-                // dragOffset mirrors the normalised translation back to screen coords
-                // and clamps so drawer can't go past fully open
-                dragOffset = max(norm, -abs(hiddenOffset)) * dir
+                let t = value.translation.width
+                guard isRTL ? t < 0 : t > 0 else { return }
+                dragOffset = max(isRTL ? t : -t, -drawerWidth)
             }
             .onEnded { value in
-                let normTranslation = dir * value.translation.width
-                let normVelocity = dir * (value.predictedEndTranslation.width - value.translation.width)
-
-                if abs(normTranslation) > drawerWidth * 0.3 || normVelocity < -300 {
+                let t = abs(value.translation.width)
+                let v = abs(value.predictedEndTranslation.width - value.translation.width)
+                if t > drawerWidth * 0.3 || v > 300 {
                     open()
                 } else {
                     withAnimation(.easeOut(duration: 0.25)) { dragOffset = 0 }
                 }
             }
 
-            // Swipe outward on drawer or overlay to close.
-            // Outward direction = same as dir:
-            //   LTR: swipe left  (-) → close
-            //   RTL: swipe right (+) → close
+            // ── Swipe outward to close ──────────────────────────────────
+            // slideX goes from 0 → drawerWidth when closing.
+            // dragOffset must be POSITIVE to increase slideX.
+            //   RTL: swipe RIGHT (translation positive) → dragOffset = translation ✓
+            //   LTR: swipe LEFT (translation negative) → dragOffset = -translation ✓
             let closeDragGesture = DragGesture()
             .onChanged { value in
-                // Normalised translation: positive = outward (closing)
-                let norm = dir * value.translation.width
-                guard norm > 0 else { return }
-                dragOffset = min(norm, abs(hiddenOffset)) * dir
+                let t = value.translation.width
+                guard isRTL ? t > 0 : t < 0 else { return }
+                dragOffset = min(isRTL ? t : -t, drawerWidth)
             }
             .onEnded { value in
-                let normTranslation = dir * value.translation.width
-                let normVelocity = dir * (value.predictedEndTranslation.width - value.translation.width)
-
-                if normTranslation > drawerWidth * 0.3 || normVelocity > 300 {
+                let t = abs(value.translation.width)
+                let v = abs(value.predictedEndTranslation.width - value.translation.width)
+                if t > drawerWidth * 0.3 || v > 300 {
                     close()
                 } else {
                     withAnimation(.easeOut(duration: 0.25)) { dragOffset = 0 }
                 }
             }
 
-            ZStack(alignment: isRTL ? .trailing : .leading) {
+            ZStack {
                 // ── Main content ──────────────────────────────────────────────
                 content
                 .zIndex(0)
@@ -141,16 +129,17 @@ struct NativeSideNavigation<Content: View>: View {
                 }
 
                 // ── Side drawer ───────────────────────────────────────────────
+                // .position() uses absolute screen coordinates — no flipping.
                 if uiState.hasSideNav() {
                     drawerContent
-                    .frame(width: drawerWidth)
+                    .frame(width: drawerWidth, height: screenH)
                     .background(Color(.systemBackground))
-                    .offset(x: drawerXOffset)
+                    .position(x: drawerCenterX, y: centerY)
                     .zIndex(2)
                     .gesture(closeDragGesture)
                     .onAppear {
                         let side = isRTL ? "RIGHT (RTL)" : "LEFT (LTR)"
-                        print("📱 NativeSideNavigation: drawer on \(side) edge")
+                        print("📱 NativeSideNavigation: drawer on \(side) edge, openCenterX=\(openCenterX)")
                         if let children = uiState.sideNavData?.children {
                             for child in children where child.type == "side_nav_group" {
                                 if case .group(let group) = child.data,
@@ -164,11 +153,15 @@ struct NativeSideNavigation<Content: View>: View {
 
                 // ── Invisible edge detector for swipe-to-open ────────────────
                 if uiState.hasSideNav() && !uiState.shouldPresentSidebar {
+                    let detectorX = isRTL
+                        ? screenW - edgeSwipeThreshold / 2
+                        : edgeSwipeThreshold / 2
+
                     Color.clear
-                    .frame(width: edgeSwipeThreshold)
+                    .frame(width: edgeSwipeThreshold, height: screenH)
                     .contentShape(Rectangle())
                     .gesture(edgeSwipeGesture)
-                    .ignoresSafeArea(edges: isRTL ? .trailing : .leading)
+                    .position(x: detectorX, y: centerY)
                     .zIndex(3)
                 }
             }
@@ -431,8 +424,7 @@ struct SideNavGroupView: View {
                     }
                     Text(group.heading).fontWeight(.medium)
                     Spacer()
-                    // chevron.forward auto-mirrors with layoutDirection:
-                    // LTR → points right, RTL → points left
+                    // chevron.forward auto-mirrors in RTL (points left in RTL, right in LTR)
                     Image(systemName: "chevron.forward")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)

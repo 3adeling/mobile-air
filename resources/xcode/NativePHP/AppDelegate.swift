@@ -37,8 +37,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
 
-        let locale = Locale.current.language.languageCode?.identifier ?? "en"
-        let isRTL = Locale.characterDirection(forLanguage: locale) == .rightToLeft
+        let language = Locale.preferredLanguages.first ?? "en"
+        let isRTL = Locale.characterDirection(forLanguage: language) == .rightToLeft
 
         let direction: UISemanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
 

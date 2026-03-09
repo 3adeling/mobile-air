@@ -81,8 +81,6 @@ struct NativePHPApp: App {
                 // It renders underneath the splash until WebView finishes loading
                 if appState.isReadyToLoad {
                     ContentView()
-                        .environment(\.layoutDirection, .rightToLeft)
-                        .environment(\.locale, Locale(identifier: "ar"))
                 }
 
                 // Splash overlays until WebView finishes loading (Phase 3)
@@ -99,12 +97,15 @@ struct NativePHPApp: App {
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: appState.isInitialized)
-            // RTL: Apply right-to-left layout direction to the entire SwiftUI view hierarchy.
-            // This covers NativeSideNav, SideNavItemView, SideNavGroupView, and all
-            // other SwiftUI-based NativeUI components. UIKit components (UITabBar,
-            // UINavigationBar) are handled separately via UIView.appearance() in AppDelegate.
-            .environment(\.layoutDirection, .rightToLeft)
-            .environment(\.locale, Locale(identifier: "ar"))
+            // Apply layout direction based on device locale.
+            // RTL languages (Arabic, Hebrew, etc.) get .rightToLeft; everything else gets .leftToRight.
+            // UIKit components (UITabBar, UINavigationBar) are handled separately
+            // via UIView.appearance() in AppDelegate.
+            .environment(\.layoutDirection, {
+                let language = Locale.preferredLanguages.first ?? "en"
+                return Locale.characterDirection(forLanguage: language) == .rightToLeft
+                    ? .rightToLeft : .leftToRight
+            }())
             .onOpenURL { url in
                 // Only handle if not already handled by AppDelegate during cold start
                 if !DeepLinkRouter.shared.hasPendingURL() {
