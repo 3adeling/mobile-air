@@ -97,15 +97,11 @@ struct NativePHPApp: App {
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: appState.isInitialized)
-            // Apply layout direction based on device locale.
-            // RTL languages (Arabic, Hebrew, etc.) get .rightToLeft; everything else gets .leftToRight.
+            // Apply layout direction based on rtl_support config and device locale.
+            // When rtl_support is enabled, RTL languages get .rightToLeft; otherwise always LTR.
             // UIKit components (UITabBar, UINavigationBar) are handled separately
-            // via UIView.appearance() in AppDelegate.
-            .environment(\.layoutDirection, {
-                let language = Locale.preferredLanguages.first ?? "en"
-                return Locale.characterDirection(forLanguage: language) == .rightToLeft
-                    ? .rightToLeft : .leftToRight
-            }())
+            // via AppDelegate.applyRTLAppearance().
+            .environment(\.layoutDirection, NativeUIState.shared.isRTL ? .rightToLeft : .leftToRight)
             .onOpenURL { url in
                 // Only handle if not already handled by AppDelegate during cold start
                 if !DeepLinkRouter.shared.hasPendingURL() {

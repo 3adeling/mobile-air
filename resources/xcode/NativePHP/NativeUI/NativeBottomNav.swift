@@ -27,9 +27,10 @@ struct NativeUITabBar: UIViewRepresentable {
             tabBar.scrollEdgeAppearance = appearance
         }
 
-        // RTL: Force right-to-left layout so tab items are ordered right-to-left,
-        // matching the natural reading direction for Arabic apps.
-        tabBar.semanticContentAttribute = .forceRightToLeft
+        // RTL: Conditionally force right-to-left layout so tab items are ordered
+        // right-to-left, matching the natural reading direction for Arabic apps.
+        let isRTL = NativeUIState.shared.isRTL
+        tabBar.semanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
 
         // Apply custom active color (tint color for selected items)
         if let activeColorHex = activeColor, let color = UIColor(hex: activeColorHex) {
@@ -96,6 +97,10 @@ struct NativeUITabBar: UIViewRepresentable {
     }
 
     func updateUIView(_ tabBar: UITabBar, context: Context) {
+        // Update RTL direction reactively (rtlSupport may change after makeUIView)
+        let isRTL = NativeUIState.shared.isRTL
+        tabBar.semanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
+
         // Apply custom active color (ensure it persists across updates)
         if let activeColorHex = activeColor, let color = UIColor(hex: activeColorHex) {
             tabBar.tintColor = color

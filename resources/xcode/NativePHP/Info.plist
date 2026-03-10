@@ -17,8 +17,6 @@
 	</array>
     <key>CFBundleLocalizations</key>
     <array>
-        <string>ar</string>
-        <string>en</string>
     </array>
 	<key>NSAppTransportSecurity</key>
 	<dict>

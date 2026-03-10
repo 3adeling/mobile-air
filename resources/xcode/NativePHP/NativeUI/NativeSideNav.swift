@@ -15,8 +15,7 @@ struct NativeSideNavigation<Content: View>: View {
     @Environment(\.layoutDirection) private var parentLayoutDirection
 
     private var isRTL: Bool {
-        let language = Locale.preferredLanguages.first ?? "en"
-        return Locale.characterDirection(forLanguage: language) == .rightToLeft
+        uiState.isRTL
     }
 
     @State private var expandedGroups: Set<String> = []

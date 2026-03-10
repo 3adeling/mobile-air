@@ -31,20 +31,11 @@ extension Notification.Name {
 class AppDelegate: NSObject, UIApplicationDelegate {
     static let shared = AppDelegate()
 
-    // Called when the app is launched
-    func application(
-    _ application: UIApplication,
-    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
-    ) -> Bool {
-
-        let language = Locale.preferredLanguages.first ?? "en"
-        let isRTL = Locale.characterDirection(forLanguage: language) == .rightToLeft
-
+    /// Apply or remove RTL appearance for all UIKit components.
+    /// Called from NativeUIState when rtlSupport changes.
+    static func applyRTLAppearance(_ isRTL: Bool) {
         let direction: UISemanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
 
-        // RTL: Force right-to-left layout direction for all UIKit views app-wide.
-        // Must be called before any window or view is created so appearance proxies
-        // take effect on every UIKit component (UITabBar, UINavigationBar, etc.).
         UIView.appearance().semanticContentAttribute = direction
         UINavigationBar.appearance().semanticContentAttribute = direction
         UITabBar.appearance().semanticContentAttribute = direction
@@ -52,6 +43,18 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         UICollectionView.appearance().semanticContentAttribute = direction
         UITextField.appearance().textAlignment = .natural
         UILabel.appearance().textAlignment = .natural
+    }
+
+    // Called when the app is launched
+    func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+
+        // RTL appearance is applied conditionally via applyRTLAppearance()
+        // when NativeUIState.rtlSupport is set from the Edge.Set payload.
+        // Initial state is LTR until the config flag arrives.
+        AppDelegate.applyRTLAppearance(false)
 
         // Check if the app was launched from a URL (custom scheme)
         if let url = launchOptions?[UIApplication.LaunchOptionsKey.url] as? URL {

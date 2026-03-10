@@ -17,11 +17,11 @@ struct NativeTopBar: UIViewRepresentable {
         navigationBar.scrollEdgeAppearance = appearance
         navigationBar.compactAppearance = appearance
 
-        // RTL: Force right-to-left layout on the navigation bar.
-        // This flips the positions of leftBarButtonItem (moves to right) and
-        // rightBarButtonItems (move to left), and right-aligns the title — all
-        // of which is correct for Arabic/RTL navigation bars.
-        navigationBar.semanticContentAttribute = .forceRightToLeft
+        // RTL: Conditionally force right-to-left layout on the navigation bar.
+        // When enabled, flips leftBarButtonItem to the right and rightBarButtonItems
+        // to the left — correct for Arabic/RTL navigation bars.
+        let isRTL = NativeUIState.shared.isRTL
+        navigationBar.semanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
 
         // Create navigation item
         let navItem = UINavigationItem()
@@ -40,6 +40,10 @@ struct NativeTopBar: UIViewRepresentable {
     }
 
     func updateUIView(_ navigationBar: UINavigationBar, context: Context) {
+        // Update RTL direction reactively (rtlSupport may change after makeUIView)
+        let isRTL = NativeUIState.shared.isRTL
+        navigationBar.semanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
+
         guard let topBarData = uiState.topBarData,
         let navItem = navigationBar.items?.first else { return }
 
@@ -48,8 +52,9 @@ struct NativeTopBar: UIViewRepresentable {
             // Create attributed title with subtitle
             let titleLabel = UILabel()
             titleLabel.numberOfLines = 2
-            // RTL: .natural aligns text to the right in RTL locales automatically.
-            titleLabel.textAlignment = .natural
+            // RTL: Force text alignment and semantic direction to match the app's RTL state
+            titleLabel.semanticContentAttribute = isRTL ? .forceRightToLeft : .forceLeftToRight
+            titleLabel.textAlignment = isRTL ? .right : .left
 
             let titleText = NSMutableAttributedString()
             let textColor = topBarData.textColor.flatMap { UIColor(hex: $0) } ?? UIColor.label
