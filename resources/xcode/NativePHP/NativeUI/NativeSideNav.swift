@@ -12,6 +12,7 @@ import SwiftUI
 /// It is converted to screen coords only when computing drawerXOffset.
 struct NativeSideNavigation<Content: View>: View {
     @ObservedObject var uiState = NativeUIState.shared
+    @Environment(\.layoutDirection) private var parentLayoutDirection
 
     private var isRTL: Bool {
         let language = Locale.preferredLanguages.first ?? "en"
@@ -114,6 +115,7 @@ struct NativeSideNavigation<Content: View>: View {
             ZStack {
                 // ── Main content ──────────────────────────────────────────────
                 content
+                .environment(\.layoutDirection, parentLayoutDirection)
                 .zIndex(0)
                 .disabled(uiState.shouldPresentSidebar)
 
@@ -132,6 +134,7 @@ struct NativeSideNavigation<Content: View>: View {
                 // .position() uses absolute screen coordinates — no flipping.
                 if uiState.hasSideNav() {
                     drawerContent
+                    .environment(\.layoutDirection, parentLayoutDirection)
                     .frame(width: drawerWidth, height: screenH)
                     .background(Color(.systemBackground))
                     .position(x: drawerCenterX, y: centerY)
@@ -165,6 +168,7 @@ struct NativeSideNavigation<Content: View>: View {
                     .zIndex(3)
                 }
             }
+            .environment(\.layoutDirection, .leftToRight)
             .onChange(of: uiState.shouldPresentSidebar) { _, newValue in
                 if newValue {
                     withAnimation(.easeInOut(duration: 0.3)) { dragOffset = 0 }
