@@ -144,6 +144,10 @@ class AndroidPluginCompiler
         // list is empty so a removed plugin's stale rules are cleared).
         $this->injectPluginProguardRules($allPlugins);
 
+        // Declare plugin-required Gradle plugins in the root build file (runs
+        // even when the list is empty so a removed plugin's declaration is cleared).
+        $this->injectGradlePlugins($allPlugins);
+
         if ($allPlugins->isEmpty()) {
             $this->generateEmptyRegistration();
             $this->generateEmptyRendererRegistration();
@@ -242,6 +246,116 @@ class AndroidPluginCompiler
         }
 
         $this->files->put($proguardPath, $content);
+    }
+
+    /**
+     * Declare Gradle plugins required by installed plugins in the root
+     * build.gradle.kts plugins {} block, inside a marker-delimited block
+     * rebuilt on every compile (idempotent; a removed plugin's declaration
+     * is dropped). Declared from `android.gradle_plugins` in nativephp.json.
+     *
+     * Entries default to `apply false`: the plugin lands on the build
+     * classpath only, and the app module decides whether to apply it (e.g.
+     * google-services is applied only when a google-services.json exists).
+     */
+    protected function injectGradlePlugins(Collection $plugins): void
+    {
+        $rootGradlePath = $this->androidProjectPath.'/build.gradle.kts';
+
+        if (! $this->files->exists($rootGradlePath)) {
+            return;
+        }
+
+        $content = $this->files->get($rootGradlePath);
+
+        $begin = '// BEGIN nativephp-plugin-gradle-plugins';
+        $end = '// END nativephp-plugin-gradle-plugins';
+
+        $block = $this->buildGradlePluginsBlock($plugins, $content);
+
+        if (str_contains($content, $begin) && str_contains($content, $end)) {
+            $content = preg_replace(
+                '/[ \t]*'.preg_quote($begin, '/').'.*?'.preg_quote($end, '/').'\n?/s',
+                $block,
+                $content,
+                1
+            );
+        } elseif ($block !== '') {
+            // Insert at the end of the plugins {} block. The root build file's
+            // plugins block contains no nested braces, so the first closing
+            // brace on its own line terminates it.
+            $content = preg_replace(
+                '/(plugins\s*\{.*?)(\n\})/s',
+                '$1'."\n".rtrim($block).'$2',
+                $content,
+                1
+            );
+        } else {
+            // Nothing to declare and no stale block to clear
+            return;
+        }
+
+        $this->files->put($rootGradlePath, $content);
+    }
+
+    /**
+     * Build the marker-delimited plugins declarations. Pure (no IO on the
+     * android project) so it is unit-testable. Returns '' when no plugin
+     * declares anything. $existingContent is used to skip ids the build
+     * file already declares outside our markers.
+     */
+    public function buildGradlePluginsBlock(Collection $plugins, string $existingContent = ''): string
+    {
+        $entries = [];
+
+        foreach ($plugins as $plugin) {
+            foreach ($plugin->getAndroidGradlePlugins() as $gradlePlugin) {
+                $id = $gradlePlugin['id'] ?? null;
+                $version = $gradlePlugin['version'] ?? null;
+
+                if (! $id || ! $version) {
+                    $this->warn("Plugin '{$plugin->name}' declares a gradle plugin without id/version — skipping");
+
+                    continue;
+                }
+
+                // Guard against injecting arbitrary Kotlin into the build script
+                if (! preg_match('/^[A-Za-z0-9._-]+$/', $id) || ! preg_match('/^[A-Za-z0-9._+-]+$/', $version)) {
+                    $this->warn("Plugin '{$plugin->name}' declares gradle plugin with invalid id/version '{$id}:{$version}' — skipping");
+
+                    continue;
+                }
+
+                // First declaration wins across plugins
+                if (isset($entries[$id])) {
+                    continue;
+                }
+
+                // Skip ids already declared outside our marker block
+                if ($existingContent !== '' && str_contains($existingContent, "id(\"{$id}\")")) {
+                    $withoutBlock = preg_replace(
+                        '/\/\/ BEGIN nativephp-plugin-gradle-plugins.*?\/\/ END nativephp-plugin-gradle-plugins/s',
+                        '',
+                        $existingContent
+                    );
+                    if (str_contains($withoutBlock, "id(\"{$id}\")")) {
+                        continue;
+                    }
+                }
+
+                $apply = $gradlePlugin['apply'] ?? false;
+                $entries[$id] = "    id(\"{$id}\") version \"{$version}\" apply ".($apply ? 'true' : 'false');
+            }
+        }
+
+        if (empty($entries)) {
+            return '';
+        }
+
+        return "    // BEGIN nativephp-plugin-gradle-plugins\n"
+            ."    // Auto-generated on every build from installed plugins — do not edit.\n"
+            .implode("\n", $entries)."\n"
+            ."    // END nativephp-plugin-gradle-plugins\n";
     }
 
     /**

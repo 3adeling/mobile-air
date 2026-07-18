@@ -148,6 +148,19 @@ class Plugin
         return $this->manifest->android['repositories'] ?? [];
     }
 
+    /**
+     * Gradle plugins this plugin needs declared in the root build.gradle.kts
+     * plugins {} block, as `android.gradle_plugins` in nativephp.json.
+     * Each entry: ['id' => string, 'version' => string, 'apply' => bool (default false)].
+     * `apply => false` puts the plugin on the build classpath only, so the
+     * app module can apply it conditionally (e.g. google-services when a
+     * google-services.json is present).
+     */
+    public function getAndroidGradlePlugins(): array
+    {
+        return $this->manifest->android['gradle_plugins'] ?? [];
+    }
+
     public function getAndroidFeatures(): array
     {
         return $this->manifest->android['features'] ?? [];
