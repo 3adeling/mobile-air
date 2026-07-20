@@ -254,10 +254,19 @@ class LaravelEnvironment(private val context: Context) {
 
         Log.d(TAG, "🔍 DEBUG: embeddedId from bundle = '$embeddedId'")
 
-        // Build composite from extracted .env if it exists
+        // Identity of what's currently extracted. The .version marker written
+        // after extraction is authoritative — it records the embedded composite
+        // verbatim. Recomputing from the extracted .env is only a legacy
+        // fallback, and it MUST NOT be preferred: .env carries no
+        // NATIVEPHP_APP_VERSION_CODE line, so the recompute yields "…b0"
+        // against bundle_meta.json's "…b1" and the app re-extracts the whole
+        // bundle on EVERY cold boot — several seconds of splash each launch.
         val currentId = if (laravelDir.exists()) {
+            val versionFile = File(laravelDir, VERSION_FILE)
             val envFile = File(laravelDir, ENV_FILE)
-            if (envFile.exists()) {
+            if (versionFile.exists()) {
+                versionFile.readText().trim().ifEmpty { null }
+            } else if (envFile.exists()) {
                 buildVersionId(getVersionFromEnvFile(envFile), getVersionCodeFromEnvFile(envFile))
             } else {
                 null
@@ -312,14 +321,13 @@ class LaravelEnvironment(private val context: Context) {
                 otaMarkerFile.delete()
             }
 
-            // Update .version file with the composite identity so it stays in sync
-            // with the bundled .version (and survives a re-read for the staleness check).
-            val envFile = File(laravelDir, ENV_FILE)
-            val installedId = buildVersionId(getVersionFromEnvFile(envFile), getVersionCodeFromEnvFile(envFile))
-            if (installedId != null) {
-                File(laravelDir, VERSION_FILE).writeText(installedId)
-                Log.d(TAG, "✅ Updated .version file to: $installedId")
-            }
+            // Record WHAT WAS JUST EXTRACTED: the embedded composite, verbatim.
+            // Recomputing from the extracted .env loses the version code (no
+            // NATIVEPHP_APP_VERSION_CODE line) and wrote "…b0" here while the
+            // staleness check compared against "…b1" — a permanent
+            // re-extraction loop.
+            File(laravelDir, VERSION_FILE).writeText(embeddedId)
+            Log.d(TAG, "✅ Updated .version file to: $embeddedId")
 
             Log.d(TAG, "✅ Extraction complete to ${laravelDir.absolutePath}")
 
