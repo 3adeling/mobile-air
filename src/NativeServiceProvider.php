@@ -210,6 +210,30 @@ class NativeServiceProvider extends PackageServiceProvider
         // won't find any views there), so the guard wasn't buying us
         // anything.
         app('view')->addLocation(resource_path('views/native'));
+
+        // Native-first boot manifest refresh: re-dump the registered
+        // Route::native patterns after every boot so the device-side
+        // BootPlanner survives hot reload adding/removing native routes
+        // between builds. Version-stamped; Kotlin prefers this file over
+        // the bundle_meta.json bake when the versions match. Skipped off
+        // device (no NATIVEPHP_RUNNING) and in tests.
+        $this->app->booted(function () {
+            if (! env('NATIVEPHP_RUNNING') || app()->runningUnitTests()) {
+                return;
+            }
+            try {
+                $routes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+                file_put_contents(
+                    storage_path('framework/native_routes.json'),
+                    json_encode([
+                        'version' => config('nativephp.version'),
+                        'routes' => $routes,
+                    ])
+                );
+            } catch (\Throwable $e) {
+                // Never let manifest bookkeeping affect a real request.
+            }
+        });
     }
 
     public function packageBooted()

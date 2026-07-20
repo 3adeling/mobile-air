@@ -442,15 +442,16 @@ class PHPBridge(private val context: Context) {
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
                 if (cookieValue.isNotEmpty()) {
-                    // Manually set this cookie
-                    val cookieManager = CookieManager.getInstance()
-                    cookieManager.setCookie("http://127.0.0.1", cookieValue)
-                    Log.d(TAG, "Manually set cookie: $cookieValue")
+                    // Store is the source of truth; the WebView jar is a
+                    // gated mirror (no-op until a WebRenderer exists, so a
+                    // native-only boot never loads the Chromium provider).
+                    com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
+                    com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
+                    Log.d(TAG, "Stored cookie: $cookieValue")
                 }
             }
 
-            // Make sure to flush the cookies
-            CookieManager.getInstance().flush()
+            com.nativephp.mobile.security.WebCookieMirror.flush()
             Log.d(TAG, "Flushed cookies after extraction")
         } else {
             Log.d(TAG, "No Set-Cookie headers found in the response")

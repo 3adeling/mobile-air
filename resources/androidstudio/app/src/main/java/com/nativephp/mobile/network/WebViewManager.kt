@@ -340,11 +340,31 @@ class WebViewManager(
                 // isActive = true (NativeElementBridge), so this is safe; for a
                 // plain web route it stays false. Without this, exit-to-web leaves
                 // the frozen native tree on screen over the loaded WebView page.
-                com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
+                //
+                // Commit-gated EXIT_WEB swap: while pendingWebSwap is set, keep
+                // the frozen native tree visible through Chromium init — the
+                // flip happens in onPageCommitVisible instead, so the swap never
+                // flashes a blank/stale WebView.
+                val activity = context as? MainActivity
+                if (activity?.pendingWebSwap != true) {
+                    com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
+                }
 
                 // Inject safe area insets IMMEDIATELY when page starts loading
                 // This ensures CSS variables are available before DOM parsing
-                (context as? MainActivity)?.injectSafeAreaInsetsToWebView()
+                activity?.injectSafeAreaInsetsToWebView()
+            }
+
+            override fun onPageCommitVisible(view: WebView, url: String) {
+                super.onPageCommitVisible(view, url)
+                val activity = context as? MainActivity
+                if (activity?.pendingWebSwap == true) {
+                    activity.pendingWebSwap = false
+                    com.nativephp.mobile.ui.nativerender.NativeUIBridge.isActive.value = false
+                }
+                // Renderer-agnostic first-content signal (web renderer):
+                // the page's first visible commit is honest TTFD.
+                activity?.onFirstContent("web-commit")
             }
 
             /**
