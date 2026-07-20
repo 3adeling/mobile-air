@@ -39,7 +39,15 @@ class LaravelEnvironment(private val context: Context) {
         // APK + queued WorkManager job can run an ephemeral PHP task against a
         // mid-delete / mid-extract vendor/ tree and fail with
         // `Class "Native\Mobile\Runtime" not found`.
-        private val extractionLock = ReentrantLock()
+        //
+        // Internal (not private): PHPBridge.bootPersistentRuntime takes this
+        // same lock so the persistent php_embed_init can never overlap the
+        // classic embed init/shutdown cycles of runBaseArtisanCommands from a
+        // concurrently-created activity — the two paths use different native
+        // mutexes, and a classic php_embed_shutdown mid-boot guts the
+        // persistent interpreter's module/class state (boots "in 13ms", then
+        // every dispatch 500s with `Class "Native\Mobile\Runtime" not found`).
+        internal val extractionLock = ReentrantLock()
 
         // Classic (embed-per-command) artisan cannot run a second time in a
         // process where the persistent PHP runtime has been shut down — the
@@ -189,16 +197,25 @@ class LaravelEnvironment(private val context: Context) {
             // } else {
             //     extractLaravelBundle()
             // }
-            val didExtract = extractLaravelBundle()
 
-            setupEnvironment(didExtract)
+            // Hold the lock across extraction AND the post-extraction steps
+            // (.env writes + classic artisan). A second activity's init thread
+            // otherwise unblocks after the extraction alone, skips artisan via
+            // baseArtisanRanThisProcess, and boots the persistent runtime
+            // while THIS thread is still cycling classic embeds — see the
+            // extractionLock comment for the failure that causes.
+            extractionLock.withLock {
+                val didExtract = extractLaravelBundleUnlocked()
 
-            // Only run artisan commands when files were actually extracted/changed
-            if (didExtract) {
-                Log.d(TAG, "📦 Running post-extraction artisan commands...")
-                runBaseArtisanCommands()
-            } else {
-                Log.d(TAG, "⚡ Skipping artisan commands — no extraction needed")
+                setupEnvironment(didExtract)
+
+                // Only run artisan commands when files were actually extracted/changed
+                if (didExtract) {
+                    Log.d(TAG, "📦 Running post-extraction artisan commands...")
+                    runBaseArtisanCommands()
+                } else {
+                    Log.d(TAG, "⚡ Skipping artisan commands — no extraction needed")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing Laravel environment", e)

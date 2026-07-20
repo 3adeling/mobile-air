@@ -416,6 +416,35 @@ JNIEXPORT jint JNICALL native_persistent_boot(JNIEnv *env, jobject thiz, jstring
         LOGE("persistent_boot: bootstrap produced errors: %.200s", boot_output);
     }
 
+    // Verify the bootstrap actually left the runtime in place before blessing
+    // the interpreter as booted. php_execute_script gives no usable signal
+    // here: a bailed script (bootstrap file missing mid-extraction, fatal
+    // during Laravel boot) unwinds through zend_end_try and used to fall
+    // through to persistent_initialized = 1 — a ~10ms "boot" with no classes
+    // loaded, after which every dispatch 500s with `Class
+    // "Native\Mobile\Runtime" not found` until the process dies.
+    int boot_verified = 0;
+    zend_first_try {
+        zval verify_result;
+        if (zend_eval_string(
+                "(int) (class_exists('Native\\\\Mobile\\\\Runtime', false)"
+                " && \\Native\\Mobile\\Runtime::isBooted())",
+                &verify_result, "persistent_boot_verify") == SUCCESS) {
+            boot_verified = (Z_TYPE(verify_result) == IS_LONG && Z_LVAL(verify_result) == 1);
+            zval_ptr_dtor(&verify_result);
+        }
+    } zend_end_try();
+
+    if (!boot_verified) {
+        LOGE("persistent_boot: bootstrap did NOT boot the runtime (Runtime class/boot state missing) — tearing down");
+        safe_php_embed_shutdown();
+        php_initialized = 0;
+        set_persistent_boot_state(PERSISTENT_BOOT_FAILED);
+        (*env)->ReleaseStringUTFChars(env, jBootstrapPath, bootstrapPath);
+        pthread_mutex_unlock(&g_php_request_mutex);
+        return -2;
+    }
+
     persistent_initialized = 1;
     set_persistent_boot_state(PERSISTENT_BOOT_SUCCEEDED);
     LOGI("persistent_boot: PHP interpreter is now persistent and Laravel is booted");
