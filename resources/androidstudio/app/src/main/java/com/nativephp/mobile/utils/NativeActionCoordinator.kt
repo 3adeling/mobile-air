@@ -109,9 +109,14 @@ class NativeActionCoordinator : Fragment() {
         fun install(activity: FragmentActivity): NativeActionCoordinator =
             activity.supportFragmentManager.findFragmentByTag("NativeActionCoordinator") as? NativeActionCoordinator
                 ?: NativeActionCoordinator().also {
+                    // install() is reached from the deferred boot callback, which can
+                    // land after the user backgrounds the app mid-boot — i.e. after
+                    // onSaveInstanceState. A plain commitNow() then throws
+                    // IllegalStateException and kills the app. State loss is fine:
+                    // this fragment is headless and install() re-adds it on demand.
                     activity.supportFragmentManager.beginTransaction()
                         .add(it, "NativeActionCoordinator")
-                        .commitNow()
+                        .commitNowAllowingStateLoss()
                 }
 
         /**
