@@ -531,18 +531,22 @@ XML;
             $apkPath = $this->buildType === 'profileable'
                 ? base_path('nativephp/android/app/build/outputs/apk/profileable/app-profileable.apk')
                 : base_path('nativephp/android/app/build/outputs/apk/debug/app-debug.apk');
-            $installCmd = "$adbCommand -s $targetDeviceId install -r \"$apkPath\"";
+            // -d allows version-code downgrades on debuggable builds, e.g. a
+            // NATIVEPHP_APP_VERSION=DEBUG build (code 1) over a versioned install.
+            $installCmd = "$adbCommand -s $targetDeviceId install -r -d \"$apkPath\"";
             $this->logToFile("Installing APK: $installCmd");
             // Debug APKs are large (~200MB+); a cold emulator can exceed the
             // default 60s Process timeout mid-install. Give it room.
             $installResult = Process::timeout(300)->run($installCmd);
 
             // A previously-installed release-key-signed build blocks an -r update
-            // (signature mismatch). Uninstall and retry so switching to a
-            // profileable build "just works".
+            // (signature mismatch), and -d can't downgrade a non-debuggable
+            // (profileable) build. Uninstall and retry so switching builds
+            // "just works".
             if (! $installResult->successful()
-                && str_contains($installResult->errorOutput().$installResult->output(), 'INSTALL_FAILED_UPDATE_INCOMPATIBLE')) {
-                $this->logToFile('Signature mismatch on update; uninstalling and retrying install');
+                && Str::contains($installResult->errorOutput().$installResult->output(),
+                    ['INSTALL_FAILED_UPDATE_INCOMPATIBLE', 'INSTALL_FAILED_VERSION_DOWNGRADE'])) {
+                $this->logToFile('Incompatible installed build (signature or version downgrade); uninstalling and retrying install');
                 Process::timeout(120)->run("$adbCommand -s $targetDeviceId uninstall $appId");
                 $installResult = Process::timeout(300)->run($installCmd);
             }
