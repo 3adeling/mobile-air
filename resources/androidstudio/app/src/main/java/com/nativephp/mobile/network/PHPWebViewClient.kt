@@ -201,15 +201,16 @@ class PHPWebViewClient(
         val parseTime = System.currentTimeMillis() - parseStart
         Log.d("PerfTiming", "⏱️ WEBCLIENT [$path] prep=${prepTime}ms php=${phpTime}ms parse=${parseTime}ms")
 
-        // ✅ Handle Set-Cookie headers
+        // ✅ Handle Set-Cookie headers (jar mirror is gated; parseResponse
+        // already stored them in LaravelCookieStore)
         responseHeaders.entries
             .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
             .forEach { (_, value) ->
                 Log.d(TAG, "🍪 Setting cookie from response: $value")
-                CookieManager.getInstance().setCookie("http://127.0.0.1", value)
+                com.nativephp.mobile.security.WebCookieMirror.set(value)
             }
 
-        CookieManager.getInstance().flush()
+        com.nativephp.mobile.security.WebCookieMirror.flush()
 
         // ✅ Handle redirects
         if (statusCode in 300..399) {
@@ -303,11 +304,11 @@ class PHPWebViewClient(
            .flatMap { it.value.split("\n") }
            .forEach { cookie ->
                LaravelCookieStore.storeFromSetCookieHeader(cookie)
-               CookieManager.getInstance().setCookie("http://127.0.0.1", cookie)
+               com.nativephp.mobile.security.WebCookieMirror.set(cookie)
                Log.d(TAG, "🍪 Stored cookie from Set-Cookie header: $cookie")
            }
 
-       CookieManager.getInstance().flush()
+       com.nativephp.mobile.security.WebCookieMirror.flush()
        LaravelCookieStore.logAll()
 
        return Triple(headers, body.trim(), statusCode)

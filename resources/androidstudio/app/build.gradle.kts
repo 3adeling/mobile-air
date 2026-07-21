@@ -98,6 +98,12 @@ android {
             initWith(getByName("release"))
             isDebuggable = false
             isProfileable = true
+            // Always R8-minify, regardless of the app's minify_enabled config.
+            // Play-delivered releases run R8, so an unminified profileable build
+            // measures a cold start no user ever sees — with the native-ui
+            // plugin's icon/coil deps that's ~58MB of dex vs ~9MB and ~+90ms
+            // of bindApplication on a Pixel 9.
+            isMinifyEnabled = true
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
         }

@@ -947,11 +947,21 @@ class BuildIosAppCommand extends Command
             }
         }
 
+        // Native-first boot manifest (mirrors Android PreparesBuild): the
+        // device-side BootPlanner matches the start URL against these patterns
+        // to decide whether the first screen dispatches directly into the
+        // persistent runtime (no WKWebView) or through the legacy WebView
+        // path. NATIVEPHP_BOOT_MODE=web forces the legacy path.
+        $nativeRoutes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+        $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
+
         $bundleMeta = json_encode([
             'version' => $appVersion,
             'version_code' => $versionCode,
             'bifrost_app_id' => $bifrostAppId,
             'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+            'entry_mode' => $entryMode,
+            'native_routes' => $nativeRoutes,
         ], JSON_PRETTY_PRINT);
 
         file_put_contents(dirname($zipPath).'/bundle_meta.json', $bundleMeta);

@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var phpOutput = ""
     @StateObject private var uiState = NativeUIState.shared
     @ObservedObject private var nativeUIBridge = NativeUIBridge.shared
+    @ObservedObject private var bootState = BootState.shared
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -61,7 +62,7 @@ struct ContentView: View {
                             .zIndex(Double(screen.id))
                     }
                 }
-            } else {
+            } else if bootState.webViewAllowed {
                 NativeSideNavigation(onNavigate: handleNavigation) {
                     WebViewLayoutContainer(onTabSelected: handleNavigation)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,6 +72,12 @@ struct ContentView: View {
                             }
                         }
                 }
+            } else {
+                // Native-direct boot, first tree not yet published: hold a
+                // plain background under the splash. Mounting the WebView
+                // container here would create the WKWebView and spawn its
+                // WebKit processes for nothing.
+                Color(.systemBackground).ignoresSafeArea()
             }
         }
         .overlay(alignment: .top) {
@@ -93,6 +100,12 @@ struct ContentView: View {
             value: nativeUIBridge.screenKey
         )
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isActive)
+        .onChange(of: nativeUIBridge.isActive) { active in
+            // Native-first boot: the first published tree IS first content.
+            if active && !AppState.shared.isInitialized {
+                AppState.shared.markInitialized()
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: nativeUIBridge.isReloading)
         // Global 3-finger swipe-right escape hatch (attaches a recognizer to the
         // key window). Fires `JumpEscapeHatch`; the Jump client exits any
@@ -806,8 +819,11 @@ struct WebView: UIViewRepresentable {
 
             // Only load default URL if there was no pending deep link
             if !hasPendingDeepLink {
-                DebugLogger.shared.log("🌐 No pending deep link, loading default URL")
-                let startPath = NativePHPApp.getStartURL()
+                // EXIT_WEB from a native-direct boot lands here with the
+                // exit destination pending; otherwise load the start URL.
+                let startPath = BootState.shared.pendingWebPath ?? NativePHPApp.getStartURL()
+                BootState.shared.pendingWebPath = nil
+                DebugLogger.shared.log("🌐 Loading \(startPath)")
                 let startPage = URL(string: "php://127.0.0.1\(startPath)")
                 webView.load(URLRequest(url: startPage ?? fallbackURL))
             } else {

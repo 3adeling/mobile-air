@@ -10,6 +10,13 @@ import org.json.JSONObject
 
 interface WebViewProvider {
     fun getWebView(): WebView
+
+    /**
+     * The WebView if one has been created — native-first boots have none
+     * until a web response needs painting. Hot paths (event dispatch) use
+     * this so they never force Chromium into a native-only process.
+     */
+    fun getWebViewOrNull(): WebView? = null
 }
 
 class NativeActionCoordinator : Fragment() {
@@ -94,7 +101,7 @@ class NativeActionCoordinator : Fragment() {
 
             Log.d("NativeActionCoordinator", "📢 Dispatching JS event: $event")
 
-            (activity as? WebViewProvider)?.getWebView()?.evaluateJavascript(js, null)
+            (activity as? WebViewProvider)?.getWebViewOrNull()?.evaluateJavascript(js, null)
 
             // Also inject into the element event queue for #[OnNative] listeners
             try {
@@ -109,9 +116,14 @@ class NativeActionCoordinator : Fragment() {
         fun install(activity: FragmentActivity): NativeActionCoordinator =
             activity.supportFragmentManager.findFragmentByTag("NativeActionCoordinator") as? NativeActionCoordinator
                 ?: NativeActionCoordinator().also {
+                    // install() is reached from the deferred boot callback, which can
+                    // land after the user backgrounds the app mid-boot — i.e. after
+                    // onSaveInstanceState. A plain commitNow() then throws
+                    // IllegalStateException and kills the app. State loss is fine:
+                    // this fragment is headless and install() re-adds it on demand.
                     activity.supportFragmentManager.beginTransaction()
                         .add(it, "NativeActionCoordinator")
-                        .commitNow()
+                        .commitNowAllowingStateLoss()
                 }
 
         /**

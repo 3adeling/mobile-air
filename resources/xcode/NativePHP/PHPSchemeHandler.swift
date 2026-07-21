@@ -400,6 +400,48 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
         return properties
     }
 
+    /// Exit-envelope handling for a native session whose scheme task was
+    /// cancelled (app backgrounded mid-session). Mirrors the boot-path
+    /// handling in NativePHPApp.handleNativeSessionExit.
+    private func handleOrphanedNativeExit(_ raw: String) {
+        let head = raw.components(separatedBy: "\r\n\r\n").first ?? raw
+        let lines = head.components(separatedBy: "\r\n")
+        let status = lines.first?
+            .components(separatedBy: " ")
+            .dropFirst().first.flatMap { Int($0) } ?? 200
+        guard (300...399).contains(status),
+              let loc = lines
+                  .first(where: { $0.lowercased().hasPrefix("location:") })?
+                  .components(separatedBy: ":").dropFirst().joined(separator: ":")
+                  .trimmingCharacters(in: .whitespaces),
+              !loc.isEmpty
+        else { return }
+
+        let path = (loc.hasPrefix("http") || loc.hasPrefix("php:"))
+            ? (URL(string: loc)?.path ?? "/")
+            : loc
+
+        DispatchQueue.main.async {
+            NSLog("[NativeBoot] ⇄ orphaned EXIT_WEB → \(path) (scheme task was cancelled)")
+            if SharedWebView.shared.webView != nil {
+                // WebView exists (detached while native was active): load the
+                // destination into it, then unmount the native branch so it
+                // remounts showing the page.
+                NotificationCenter.default.post(
+                    name: .redirectToURLNotification,
+                    object: nil,
+                    userInfo: ["url": "php://127.0.0.1\(path)"]
+                )
+            } else {
+                // Never created (native-direct boot): create lazily with the
+                // destination pending.
+                BootState.shared.allowWebView(loading: path)
+            }
+            NativeUIBridge.shared.isActive = false
+            AppState.shared.markInitialized()
+        }
+    }
+
     private func error(code: Int, description: String) -> NSError
     {
         print("ERROR: \(description)")
@@ -408,7 +450,19 @@ class PHPSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private func forwardToPHP(requestData: RequestData, schemeTask: WKURLSchemeTask, redirectCount: Int = 0) {
         getResponse(request: requestData) { result in
-            guard self.isTaskActive(schemeTask) else { return }
+            guard self.isTaskActive(schemeTask) else {
+                // WebKit cancels in-flight scheme tasks when the app
+                // backgrounds — but a Route::native request IS the native
+                // session, which keeps running and eventually returns its
+                // exit envelope. If that lands after the task died, honor
+                // an EXIT_WEB anyway or the user is stranded on a frozen
+                // native screen with a runloop that no longer exists.
+                if case .success(let data) = result,
+                   let raw = String(data: data, encoding: .utf8) {
+                    self.handleOrphanedNativeExit(raw)
+                }
+                return
+            }
 
             switch result {
             case .success(let responseData):

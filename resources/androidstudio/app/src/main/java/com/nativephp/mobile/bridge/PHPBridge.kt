@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import com.nativephp.mobile.network.PHPRequest
 import com.nativephp.mobile.security.LaravelCookieStore
+import kotlin.concurrent.withLock
 
 class PHPBridge(private val context: Context) {
     private var lastPostData: String? = null
@@ -110,7 +111,15 @@ class PHPBridge(private val context: Context) {
      * Boot the persistent PHP runtime. Call once during app startup.
      * PHP interpreter stays alive — no init/shutdown per request.
      */
-    fun bootPersistentRuntime(): Boolean {
+    fun bootPersistentRuntime(): Boolean = LaravelEnvironment.extractionLock.withLock {
+        // The lock is shared with LaravelEnvironment.initialize(): a
+        // concurrently-created activity may still be extracting the bundle or
+        // cycling classic-embed artisan commands, and the persistent
+        // php_embed_init must not overlap either (different native mutexes;
+        // a classic php_embed_shutdown mid-boot guts the persistent
+        // interpreter — it "boots" in ~10ms with no classes loaded and every
+        // dispatch 500s until the process dies).
+
         // Process reuse: a plugin foreground service kept the process alive
         // past the previous activity, which parked (not tore down) the
         // runtime. Reuse it — native PHP re-init in a used process is
@@ -433,15 +442,16 @@ class PHPBridge(private val context: Context) {
                 // Extract the cookie value (after "Set-Cookie:")
                 val cookieValue = cookieLine.substringAfter(":", "").trim()
                 if (cookieValue.isNotEmpty()) {
-                    // Manually set this cookie
-                    val cookieManager = CookieManager.getInstance()
-                    cookieManager.setCookie("http://127.0.0.1", cookieValue)
-                    Log.d(TAG, "Manually set cookie: $cookieValue")
+                    // Store is the source of truth; the WebView jar is a
+                    // gated mirror (no-op until a WebRenderer exists, so a
+                    // native-only boot never loads the Chromium provider).
+                    com.nativephp.mobile.security.LaravelCookieStore.storeFromSetCookieHeader(cookieValue)
+                    com.nativephp.mobile.security.WebCookieMirror.set(cookieValue)
+                    Log.d(TAG, "Stored cookie: $cookieValue")
                 }
             }
 
-            // Make sure to flush the cookies
-            CookieManager.getInstance().flush()
+            com.nativephp.mobile.security.WebCookieMirror.flush()
             Log.d(TAG, "Flushed cookies after extraction")
         } else {
             Log.d(TAG, "No Set-Cookie headers found in the response")

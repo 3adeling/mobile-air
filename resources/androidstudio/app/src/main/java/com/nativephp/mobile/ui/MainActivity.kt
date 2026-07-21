@@ -65,7 +65,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : FragmentActivity(), WebViewProvider {
-    private lateinit var webView: WebView
+    // Native-first boot: no WebView exists until a web response actually
+    // needs painting. Compose state so MainScreen recomposes and attaches
+    // the WebView the moment a renderer is lazily created.
+    private var webRenderer by mutableStateOf<com.nativephp.mobile.network.WebRenderer?>(null)
+    // True while an EXIT_WEB swap is in flight: the frozen native tree stays
+    // visible (isActive stays true) until the web page's first commit, so
+    // Chromium init never shows as a blank flash.
+    @Volatile var pendingWebSwap = false
+    // One-shot latch for the renderer-agnostic first-content signal that
+    // drives splash dismissal + reportFullyDrawn.
+    @Volatile private var firstContentReported = false
     // Lazy so PHPBridge's static `System.loadLibrary("php_wrapper")` (loading the large
     // embedded-PHP .so) runs on FIRST use — which is now the post-first-frame boot block —
     // instead of during activity construction on the TTID critical path. First access is on
@@ -73,8 +83,11 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     // lazy makes that safe.
     private val phpBridge by lazy { PHPBridge(this) }
     private lateinit var laravelEnv: LaravelEnvironment
-    private lateinit var webViewManager: WebViewManager
     private lateinit var coord: NativeActionCoordinator
+    // Set once the boot pipeline's onReady has run — replaces the old
+    // "::webViewManager.isInitialized" readiness checks now that a
+    // WebViewManager only exists when a WebRenderer does.
+    @Volatile private var bootReady = false
     private var pendingDeepLink: String? = null
     private var hotReloadWatcherThread: Thread? = null
     private var queueWorker: PHPQueueWorker? = null
@@ -129,14 +142,17 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             pendingInsets = systemBars
 
-            // Inject CSS custom properties into WebView if ready
-            if (::webViewManager.isInitialized) {
+            // Inject CSS custom properties into WebView if ready (no-op
+            // without a renderer; native screens take safe-area from the
+            // element flat buffer instead)
+            if (webRenderer != null) {
                 injectSafeAreaInsets(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             }
 
-            // Detect keyboard visibility and inject class into WebView
+            // Keyboard visibility: Compose state always (native bottom nav
+            // reacts), WebView CSS class only when a renderer exists.
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
-            if (::webViewManager.isInitialized) {
+            if (bootReady) {
                 injectKeyboardVisibility(imeVisible)
             }
 
@@ -181,61 +197,40 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             }
         }
 
-        // Defer the expensive work until AFTER the first frame is laid out. The WebView
-        // and the boot thread's I/O previously sat on the critical path to first paint;
-        // running them here keeps the splash frame fast while still overlapping WebView
-        // init with the background Laravel boot.
+        // Defer the expensive work until AFTER the first frame is laid out. The boot
+        // thread's I/O previously sat on the critical path to first paint; running it
+        // here keeps the splash frame fast. Native-first: no WebView is created here —
+        // an all-native app never pays Chromium init at all.
         window.decorView.post {
-            // WebView (Chromium first-init) — off the first-frame critical path now.
-            webView = WebView(this).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                settings.mediaPlaybackRequiresUserGesture = false
-            }
-
-            // Kick off the PHP boot pipeline. Bridge/renderer registration happens on that
-            // thread ahead of the PHP boot (see initializeEnvironmentAsync). It overlaps the
-            // WebView init above; both now run after first paint.
             initializeEnvironmentAsync {
-                // Setup WebView and managers FIRST
-                webViewManager = WebViewManager(this, webView, phpBridge)
-                webViewManager.setup()
                 coord = NativeActionCoordinator.install(this)
 
-                // Add JavaScript interface for drawer control
-                webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
-
-                // Compose the real UI now (this attaches the WebView).
+                // Compose the real UI now. MainScreen is cheap without a WebView;
+                // the native tree (or a lazily-created WebView) attaches when its
+                // content arrives.
                 showContent = true
+                bootReady = true
 
-                // Inject safe area insets BEFORE loading any URL to prevent content shift
-                pendingInsets?.let {
-                    injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
-                }
-
-                // NOW load the URL after WebView is fully configured
                 val target = pendingDeepLink ?: LaravelEnvironment.getStartURL(this)
-                val fullUrl = "http://127.0.0.1$target"
-                Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
-                webView.loadUrl(fullUrl)
-
                 pendingDeepLink = null
 
-                // The two lines below keep their original 12-space indent: splash-screen
-                // plugins (s2br/nativephp-mobile-splashscreen) patch them via exact-string
-                // match including that indentation. Do not re-indent.
-            // Hide splash screen after URL is loaded
-            showSplash = false
-
-                // Report the app as fully drawn so cold-start TTFD is measured against
-                // real content (Macrobenchmark / Play Console vitals) instead of an
-                // implicit first frame.
-                try {
-                    reportFullyDrawn()
-                } catch (t: Throwable) {
-                    Log.w("MainActivity", "reportFullyDrawn failed: ${t.message}")
+                when (BootPlanner.plan(this, target)) {
+                    BootPlanner.Entry.NATIVE_DIRECT -> {
+                        // Direct JNI dispatch into the native runloop — the WebView
+                        // is not involved. Splash dismissal + reportFullyDrawn fire
+                        // from the first-content signal (first framed element tree).
+                        startNativeSession(target)
+                        startFirstContentWatchdog()
+                    }
+                    BootPlanner.Entry.WEB_LEGACY -> {
+                        // Legacy path, unchanged: create the renderer eagerly and
+                        // drive the first request through webView.loadUrl. First
+                        // content fires on the page's first commit.
+                        val renderer = ensureWebRenderer()
+                        val fullUrl = "http://127.0.0.1$target"
+                        Log.d("DeepLink", "🚀 Loading final URL after WebView setup: $fullUrl")
+                        renderer.webView.loadUrl(fullUrl)
+                    }
                 }
 
                 // Defer the background queue worker — it boots a SECOND full Laravel
@@ -252,7 +247,6 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
                 // Start hot reload watcher AFTER Laravel environment is initialized
                 startHotReloadWatcher()
-                injectJavaScript(webView)
             }
         }
 
@@ -269,12 +263,166 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 return@addCallback
             }
 
-            if (webView.canGoBack()) {
-                webView.goBack()
+            val web = webRenderer?.webView
+            if (web?.canGoBack() == true) {
+                web.goBack()
             } else {
                 finish()
             }
         }
+    }
+
+    /**
+     * Lazily create the WebRenderer (WebView + WebViewManager). Main thread
+     * only. Idempotent — returns the existing renderer if one exists.
+     */
+    fun ensureWebRenderer(): com.nativephp.mobile.network.WebRenderer {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "WebRenderer must be created on the main thread"
+        }
+        return webRenderer ?: com.nativephp.mobile.network.WebRenderer(this, phpBridge)
+            .also { webRenderer = it }
+    }
+
+    /** WebRenderer init callback: activity-owned wiring for a fresh WebView. */
+    fun onWebRendererCreated(renderer: com.nativephp.mobile.network.WebRenderer) {
+        webRenderer = renderer
+        renderer.webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+        if (hotReloadWatcherThread != null) {
+            // Watcher predates the renderer (native-first boot): apply the
+            // dev no-cache mode it would have set at startup.
+            renderer.webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+        }
+        pendingInsets?.let {
+            injectSafeAreaInsets(it.left, it.top, it.right, it.bottom)
+        }
+        injectJavaScript(renderer.webView)
+    }
+
+    /**
+     * Boot a native session by dispatching the route directly over JNI —
+     * the WebView-free primary path. The dispatch blocks the npui-boot
+     * thread for the life of the native session; its eventual HTTP response
+     * is the session's exit envelope:
+     *   3xx + Location  → EXIT_WEB: create the renderer, load the web page
+     *   204             → hot-restart: the watcher re-executes; nothing to do
+     *   anything else   → session ended: nothing left to show → finish()
+     */
+    private fun startNativeSession(uri: String) {
+        val sessionThread = Thread({
+            try {
+                Log.d("NativeBoot", "🚀 Direct native dispatch: $uri")
+                val request = com.nativephp.mobile.network.PHPRequest(
+                    url = uri,
+                    method = "GET",
+                    body = "",
+                    headers = mapOf("Accept" to "text/html"),
+                    getParameters = emptyMap()
+                )
+                val raw = phpBridge.handleLaravelRequest(request)
+                handleNativeSessionExit(raw)
+            } catch (e: Exception) {
+                Log.e("NativeBoot", "Native session failed: ${e.message}", e)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        // Fall back to the legacy path rather than wedge on splash.
+                        ensureWebRenderer().webView.loadUrl("http://127.0.0.1$uri")
+                    }
+                }
+            }
+        }, "npui-boot")
+        nativeUIThread = sessionThread
+        sessionThread.start()
+    }
+
+    private fun handleNativeSessionExit(rawResponse: String) {
+        // Parse just the status line + Location header from the raw response.
+        val head = rawResponse.substringBefore("\r\n\r\n")
+        val statusLine = head.lineSequence().firstOrNull() ?: ""
+        val status = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 200
+        val location = head.lineSequence()
+            .firstOrNull { it.startsWith("Location:", ignoreCase = true) }
+            ?.substringAfter(":")?.trim()
+
+        Log.d("NativeBoot", "Native session exited: status=$status location=$location")
+
+        when {
+            status in 300..399 && !location.isNullOrEmpty() -> {
+                val path = if (location.startsWith("http")) {
+                    android.net.Uri.parse(location).encodedPath ?: "/"
+                } else {
+                    location
+                }
+                runOnUiThread { exitToWeb(path) }
+            }
+            status == 204 -> {
+                // Hot restart in flight — the reload watcher re-executes the
+                // route on a fresh thread. Nothing to do here.
+                Log.d("NativeBoot", "Native session yielded for hot restart")
+            }
+            else -> runOnUiThread {
+                if (!isFinishing && !isDestroyed && !NativeUIBridge.isActive.value) {
+                    Log.d("NativeBoot", "Native stack empty — finishing activity")
+                    finish()
+                }
+            }
+        }
+    }
+
+    /**
+     * EXIT_WEB: swap from the native tree to a (possibly brand-new) WebView.
+     * Commit-gated — the frozen native tree stays up until the web page's
+     * first visible commit so Chromium init never flashes blank.
+     */
+    private fun exitToWeb(path: String) {
+        if (isFinishing || isDestroyed) return
+        Log.d("NativeBoot", "⇄ EXIT_WEB → $path")
+        pendingWebSwap = true
+        val renderer = ensureWebRenderer()
+        renderer.webView.loadUrl("http://127.0.0.1$path")
+    }
+
+    /**
+     * Renderer-agnostic first-content signal: fired by the first framed
+     * native element tree (MainScreen LaunchedEffect) or the first web page
+     * commit (WebViewManager.onPageCommitVisible). One-shot.
+     */
+    fun onFirstContent(source: String) {
+        if (firstContentReported) return
+        firstContentReported = true
+        Log.d("MainActivity", "🎨 First content ($source)")
+
+                // The two lines below keep their original 12-space indent: splash-screen
+                // plugins (s2br/nativephp-mobile-splashscreen) patch them via exact-string
+                // match including that indentation. Do not re-indent.
+            // Hide splash screen after URL is loaded
+            showSplash = false
+
+        // Report the app as fully drawn so cold-start TTFD is measured against
+        // real content (Macrobenchmark / Play Console vitals) instead of an
+        // implicit first frame.
+        try {
+            reportFullyDrawn()
+        } catch (t: Throwable) {
+            Log.w("MainActivity", "reportFullyDrawn failed: ${t.message}")
+        }
+    }
+
+    /**
+     * Native-first boots have no WebView error page to fall back on: if PHP
+     * never publishes a tree (broken boot), nothing would ever dismiss the
+     * splash. After 10s, fall back to the legacy WebView path so the user at
+     * least sees Laravel's error output.
+     */
+    private fun startFirstContentWatchdog() {
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!firstContentReported && !isFinishing && !isDestroyed) {
+                Log.w("MainActivity", "⏰ No content 10s after native boot — falling back to WebView")
+                val target = LaravelEnvironment.getStartURL(this)
+                ensureWebRenderer().webView.loadUrl("http://127.0.0.1$target")
+                onFirstContent("watchdog")
+            }
+        }, 10_000L)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -472,7 +620,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         } else {
             val fullUrl = "http://127.0.0.1$route"
             Log.d("DeepLink", "🚀 Loading deep link immediately (app already running): $fullUrl")
-            webView.loadUrl(fullUrl)
+            ensureWebRenderer().webView.loadUrl(fullUrl)
         }
         pendingDeepLink = null
     }
@@ -483,7 +631,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         if (!notificationUrl.isNullOrEmpty()) {
             Log.d("DeepLink", "🔔 Notification URL: $notificationUrl")
             pendingDeepLink = notificationUrl
-            if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
+            if (::laravelEnv.isInitialized && bootReady) {
                 navigateWarm(notificationUrl)
             }
             return
@@ -504,7 +652,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 fcmUrl
             }
             pendingDeepLink = route
-            if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
+            if (::laravelEnv.isInitialized && bootReady) {
                 navigateWarm(route)
             }
             return
@@ -557,8 +705,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
 
         Log.d("DeepLink", "📦 Saving deep link for later: $laravelUrl")
         pendingDeepLink = laravelUrl
-        if (::laravelEnv.isInitialized && ::webViewManager.isInitialized) {
-            // Only navigate immediately if both Laravel environment AND WebView are ready
+        if (::laravelEnv.isInitialized && bootReady) {
+            // Only navigate immediately once the boot pipeline is ready
             navigateWarm(laravelUrl)
         } else {
             Log.d("DeepLink", "⏳ Deep link saved, waiting for app initialization to complete")
@@ -574,9 +722,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     fun clearAllCookies() {
-        val cookieManager = CookieManager.getInstance()
-        cookieManager.removeAllCookies(null)
-        cookieManager.flush()
+        com.nativephp.mobile.security.LaravelCookieStore.clear()
+        com.nativephp.mobile.security.WebCookieMirror.clearAll()
         Log.d("CookieInfo", "All cookies cleared")
     }
 
@@ -614,8 +761,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 .commitNowAllowingStateLoss()
         }
 
-        if (::webViewManager.isInitialized) {
-            val chromeClient = webView.webChromeClient
+        webRenderer?.webView?.webChromeClient?.let { chromeClient ->
             if (chromeClient is WebChromeClient) {
                 chromeClient.onHideCustomView()
             }
@@ -633,8 +779,12 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     override fun getWebView(): WebView {
-        return webView
+        // Lazy-create for consumers that insist on a WebView (plugin code).
+        // Slow the first time on a native-first boot, but correct.
+        return ensureWebRenderer().webView
     }
+
+    override fun getWebViewOrNull(): WebView? = webRenderer?.webView
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -676,8 +826,10 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     private fun startHotReloadWatcher() {
-        // Configure WebView for development - disable caching for hot reload
-        webView.settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+        // Configure WebView for development - disable caching for hot reload.
+        // On a native-first boot no renderer exists yet; onWebRendererCreated
+        // applies the same mode when one appears.
+        webRenderer?.webView?.settings?.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
 
         hotReloadWatcherThread = Thread {
             val appStorageDir = File(filesDir.parent, "app_storage")
@@ -855,17 +1007,21 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                             }
 
                             runOnUiThread {
-                                webView.stopLoading()
-                                webView.clearCache(true)
-                                webView.clearHistory()
-                                webView.clearFormData()
+                                val web = webRenderer?.webView ?: run {
+                                    Log.d("HotReload", "No WebView and native UI inactive — skipping web reload")
+                                    return@runOnUiThread
+                                }
+                                web.stopLoading()
+                                web.clearCache(true)
+                                web.clearHistory()
+                                web.clearFormData()
 
-                                val currentUrl = webView.url ?: "http://127.0.0.1/"
+                                val currentUrl = web.url ?: "http://127.0.0.1/"
                                 val separator = if (currentUrl.contains("?")) "&" else "?"
                                 val cacheBustUrl = "${currentUrl}${separator}_cb=${System.currentTimeMillis()}"
 
                                 Handler(Looper.getMainLooper()).postDelayed({
-                                    webView.loadUrl(cacheBustUrl)
+                                    web.loadUrl(cacheBustUrl)
                                 }, 100)
                             }
                         }
@@ -1041,7 +1197,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             });
         })();
         """
-        webView.evaluateJavascript(jsCode, null)
+        webRenderer?.webView?.evaluateJavascript(jsCode, null)
     }
 
     // Public function called by WebViewManager on page load
@@ -1067,7 +1223,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
         } else {
             "document.body.classList.remove('keyboard-visible');"
         }
-        webView.evaluateJavascript(jsCode, null)
+        webRenderer?.webView?.evaluateJavascript(jsCode, null)
         Log.d("Keyboard", "⌨️ Keyboard visibility changed: $isVisible")
     }
 
@@ -1135,7 +1291,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
             })();
         """.trimIndent()
 
-        webView.evaluateJavascript(jsCode, null)
+        ensureWebRenderer().webView.evaluateJavascript(jsCode, null)
     }
 
     /**
@@ -1187,7 +1343,7 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                             window.Native.dispatch('$eventName', {});
                                         }
                                     """.trimIndent()
-                                    webView.evaluateJavascript(jsCode, null)
+                                    webRenderer?.webView?.evaluateJavascript(jsCode, null)
                                 }
                             )
                         },
@@ -1199,23 +1355,31 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                         // IMPORTANT: Add IME (keyboard) inset padding so content isn't hidden behind keyboard
 
                         Box(modifier = Modifier.fillMaxSize()) {
-                            AndroidView(
-                                factory = { webView },
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(paddingValues)
-                                    .consumeWindowInsets(paddingValues)
-                                    .windowInsetsPadding(WindowInsets.ime),
-                                update = { view ->
-                                    // Force layout recalculation when Compose size changes
-                                    // This ensures viewport units (100vh, 100vw) work correctly
-                                    view.requestLayout()
-                                }
-                            )
-
-                            // Native UI overlay — covers WebView when PHP renders a native tree
-                            // Must be inside SideDrawerContent so the drawer renders on top
+                            // Real either/or: the native tree and the WebView are
+                            // alternative renderers, not overlay-on-top. The WebView
+                            // only exists (and only rasters) when a WebRenderer has
+                            // been created AND no native tree is active. Detaching
+                            // the AndroidView preserves the WebView's DOM/history —
+                            // the instance lives in WebRenderer, not the composition.
                             val nativeUIActive by NativeUIBridge.isActive
+                            val renderer = webRenderer
+
+                            if (renderer != null && !nativeUIActive) {
+                                AndroidView(
+                                    factory = { renderer.webView },
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(paddingValues)
+                                        .consumeWindowInsets(paddingValues)
+                                        .windowInsetsPadding(WindowInsets.ime),
+                                    update = { view ->
+                                        // Force layout recalculation when Compose size changes
+                                        // This ensures viewport units (100vh, 100vw) work correctly
+                                        view.requestLayout()
+                                    }
+                                )
+                            }
+
                             if (nativeUIActive) {
                                 Box(
                                     modifier = Modifier
@@ -1223,6 +1387,13 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                                         .background(MaterialTheme.colorScheme.background)
                                 ) {
                                     NativeUIContent()
+                                }
+                                // First-content signal, native renderer: the tree is
+                                // composed; two frame callbacks = composed + drawn.
+                                LaunchedEffect(Unit) {
+                                    androidx.compose.runtime.withFrameNanos { }
+                                    androidx.compose.runtime.withFrameNanos { }
+                                    onFirstContent("native-tree")
                                 }
                             }
 

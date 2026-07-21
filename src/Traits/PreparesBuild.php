@@ -318,11 +318,22 @@ trait PreparesBuild
                     $bifrostAppId = trim($matches[1]);
                 }
             }
+            // Native-first boot manifest: the device-side BootPlanner matches the
+            // start URL against these patterns to decide whether the first screen
+            // dispatches directly over JNI (no WebView) or through the legacy
+            // WebView path. Routes are registered by the app's route files, which
+            // this artisan process has already loaded. NATIVEPHP_BOOT_MODE=web
+            // forces the legacy path regardless.
+            $nativeRoutes = array_keys(\Native\Mobile\Edge\NativeRouter::registeredRoutes());
+            $entryMode = env('NATIVEPHP_BOOT_MODE') === 'web' ? 'web' : 'auto';
+
             $bundleMeta = json_encode([
                 'version' => $version,
                 'version_code' => $versionCode,
                 'bifrost_app_id' => $bifrostAppId,
                 'runtime_mode' => config('nativephp.runtime.mode', 'persistent'),
+                'entry_mode' => $entryMode,
+                'native_routes' => $nativeRoutes,
             ], JSON_PRETTY_PRINT);
             file_put_contents($assetsDir.DIRECTORY_SEPARATOR.'bundle_meta.json', $bundleMeta);
             $runtimeMode = config('nativephp.runtime.mode', 'persistent');
