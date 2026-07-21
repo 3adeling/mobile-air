@@ -32,10 +32,9 @@
     native <methods>;
 }
 
-# Firebase/Google Play Services
--keep class com.google.firebase.** { *; }
+# Google Play Services (used by several plugins: geolocation, scanner, ...)
+# Firebase rules live in the firebase plugin's nativephp.json proguard_rules.
 -keep class com.google.android.gms.** { *; }
--dontwarn com.google.firebase.**
 -dontwarn com.google.android.gms.**
 
 # AndroidX Security (for secure storage)

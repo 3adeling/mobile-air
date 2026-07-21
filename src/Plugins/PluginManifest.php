@@ -127,6 +127,7 @@ class PluginManifest implements JsonSerializable
             isset($data['android']['services']) ||
             isset($data['android']['receivers']) ||
             isset($data['android']['providers']) ||
+            isset($data['android']['gradle_plugins']) ||
             isset($data['android']['min_version'])
         );
 
