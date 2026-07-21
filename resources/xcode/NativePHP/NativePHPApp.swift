@@ -188,6 +188,12 @@ struct NativePHPApp: App {
             DispatchQueue.main.async {
                 NSLog("[NativeBoot] ⇄ EXIT_WEB → \(path)")
                 BootState.shared.allowWebView(loading: path)
+                // Drop the native branch explicitly. The usual clearers can't
+                // run here: didCommit needs the WebView to load, but the
+                // WebView only MOUNTS once the native branch unmounts — and
+                // the region teardown may be preserve-tree'd. Without this
+                // the exit deadlocks on a frozen native screen.
+                NativeUIBridge.shared.isActive = false
                 AppState.shared.markInitialized()
             }
         }
