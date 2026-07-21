@@ -831,8 +831,12 @@ struct WebView: UIViewRepresentable {
             }
         }
 
-        // Setup Laravel bridge - use shared coordinator so it persists
-        LaravelBridge.shared.send = { [weak shared] event, payload in
+        // Setup Laravel bridge - use shared coordinator so it persists.
+        // Upgrade the LOCAL delivery channel rather than overwriting `send`:
+        // `send` may be wrapped (Jump's remote-session fork), and wrappers
+        // fall back to localSend at dispatch time — so events reach the
+        // WebView the moment it materializes, even mid-session.
+        LaravelBridge.shared.localSend = { [weak shared] event, payload in
             Task { @MainActor in
                 shared?.coordinator?.notifyLaravel(event: event, payload: payload as [String : Any])
             }
