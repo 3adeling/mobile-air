@@ -175,6 +175,15 @@ fun NativeTopBar(
  * Check if a URL is external (not a relative path or localhost)
  */
 private fun isExternalUrl(url: String): Boolean {
+    // A Jump webview-forward session's host:port counts as internal: the
+    // served app generates absolute URLs with its dev-server host, and the
+    // internal path reduces them to paths the forward layer handles. Without
+    // this, native-chrome links (top bar / bottom nav / side nav) on a
+    // forwarded app open the system browser.
+    val session = com.nativephp.mobile.network.JumpWebViewSession
+    if (session.isActive && url.contains("${session.host}:${session.port}")) {
+        return false
+    }
     return (url.startsWith("http://") || url.startsWith("https://"))
             && !url.contains("127.0.0.1")
             && !url.contains("localhost")
