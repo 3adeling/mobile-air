@@ -213,6 +213,23 @@ class WebViewManager(
                     return true // prevent WebView from loading it
                 }
 
+                // Jump webview-forward session: the served app generates
+                // absolute links with ITS host (http://<devhost>:<port>/…).
+                // The WebView's origin is 127.0.0.1, so without this those
+                // links classify as "external site" below and open the system
+                // browser. Rewrite them onto 127.0.0.1 — the interception
+                // layer forwards them back to the dev server.
+                if (JumpWebViewSession.isActive &&
+                    request.url.host == JumpWebViewSession.host &&
+                    (if (request.url.port == -1) "80" else request.url.port.toString()) == JumpWebViewSession.port
+                ) {
+                    val rewritten = "http://127.0.0.1${request.url.encodedPath ?: "/"}" +
+                        (request.url.encodedQuery?.let { "?$it" } ?: "")
+                    Log.d(TAG, "🛰️ [JUMP-FORWARD] Rewriting session link → $rewritten")
+                    view.loadUrl(rewritten)
+                    return true
+                }
+
                 if ((url.startsWith("http://") || url.startsWith("https://")) &&
                     !url.contains("127.0.0.1") &&
                     !url.contains("localhost") &&
@@ -294,8 +311,14 @@ class WebViewManager(
                             url.contains("/css/") ||
                             url.contains("/fonts/") ||
                             url.contains("/images/") -> {
-                        Log.d(TAG, "🖼️ Handling asset request")
-                        phpHandler.handleAssetRequest(url, request.requestHeaders)
+                        // Jump webview-forward session: assets live on the
+                        // remote dev server, not in the local bundle.
+                        if (JumpWebViewSession.isActive) {
+                            phpHandler.forwardToRemote(request, null)
+                        } else {
+                            Log.d(TAG, "🖼️ Handling asset request")
+                            phpHandler.handleAssetRequest(url, request.requestHeaders)
+                        }
                     }
                     // Regular PHP requests
                     url.contains("127.0.0.1") -> {
@@ -322,7 +345,14 @@ class WebViewManager(
                                 data
                             }
                         } else null
-                        phpHandler.handlePHPRequest(request, postData)
+                        // Jump webview-forward session: hand the request
+                        // (with any consumed POST body) to the remote dev
+                        // server instead of the embedded PHP runtime.
+                        if (JumpWebViewSession.isActive) {
+                            phpHandler.forwardToRemote(request, postData)
+                        } else {
+                            phpHandler.handlePHPRequest(request, postData)
+                        }
                     }
                     else -> {
                         Log.d(TAG, "↪️ Delegating to system handler: $url")

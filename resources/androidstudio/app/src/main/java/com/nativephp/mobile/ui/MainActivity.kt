@@ -383,6 +383,18 @@ class MainActivity : FragmentActivity(), WebViewProvider {
     }
 
     /**
+     * Jump webview-forward session entry: same commit-gated swap as
+     * EXIT_WEB — the native tree (Jump home) stays visible through Chromium
+     * init until the forwarded page's first commit. Called by the discovery
+     * plugin's JumpBridgeRelay after JumpWebViewSession.start(); requests
+     * from the loaded page are forwarded to the remote dev server by
+     * WebViewManager while the session is active.
+     */
+    fun jumpWebViewSwap(path: String = "/") {
+        exitToWeb(path)
+    }
+
+    /**
      * Renderer-agnostic first-content signal: fired by the first framed
      * native element tree (MainScreen LaunchedEffect) or the first web page
      * commit (WebViewManager.onPageCommitVisible). One-shot.
@@ -761,11 +773,8 @@ class MainActivity : FragmentActivity(), WebViewProvider {
                 .commitNowAllowingStateLoss()
         }
 
-        webRenderer?.webView?.webChromeClient?.let { chromeClient ->
-            if (chromeClient is WebChromeClient) {
-                chromeClient.onHideCustomView()
-            }
-        }
+        // Dismiss any fullscreen custom view (video) before teardown.
+        webRenderer?.webView?.webChromeClient?.onHideCustomView()
 
         // Stop hot reload watcher thread
         shouldStopWatcher = true
