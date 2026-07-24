@@ -413,6 +413,12 @@ abstract class NativeComponent
         $hasCustomTopBar = $this->treeContainsType($content, 'top_bar');
         $hasCustomBottomNav = $this->treeContainsType($content, 'bottom_nav');
 
+        // Hoist a top-level `<native:fab>` into a Stack overlay so it
+        // floats above the content (its absolute insets then resolve
+        // against the whole content area, not whatever container the
+        // blade happened to declare it in).
+        $content = $this->hoistFabOverlay($content);
+
         // Base case: no layout (or no bars) → the screen content is the root,
         // and it is the dev's own tree, so we must NOT append siblings to it
         // directly. `$rootOwnsChildren` tracks whether the root is a container
@@ -509,6 +515,54 @@ abstract class NativeComponent
         }
 
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * Hoist a top-level `<native:fab>` (an `Elements\Fab` — wire type
+     * `pressable`, so type-matching can't find it) out of the content's
+     * flex flow and float it over the content in a Stack overlay. The fab
+     * styles itself (absolute bottom-corner insets); this just guarantees
+     * the insets resolve against the full content area. Scope matches the
+     * other inline-chrome hoists: direct children of the root. A fab
+     * nested deeper stays where it is and positions within its own
+     * container.
+     */
+    protected function hoistFabOverlay(Element $content): Element
+    {
+        $fab = null;
+        $sentinels = [];
+        $remaining = [];
+        foreach ($content->getChildren() as $child) {
+            if ($fab === null && $child instanceof Elements\Fab) {
+                $fab = $child;
+
+                continue;
+            }
+            // Keep hoistable sentinels (inline `<native:bottom-bar>`)
+            // discoverable as direct children of the tree handed to
+            // `resolveBottomBar` — lift them onto the Stack alongside
+            // the content instead of burying them one level deeper.
+            if ($child->getType() === 'bottom_bar') {
+                $sentinels[] = $child;
+
+                continue;
+            }
+            $remaining[] = $child;
+        }
+        if ($fab === null) {
+            return $content;
+        }
+        $content->setChildren($remaining);
+
+        $stack = Elements\Stack::make();
+        $stack->fill();
+        $stack->addChild($content);
+        $stack->addChild($fab);
+        foreach ($sentinels as $sentinel) {
+            $stack->addChild($sentinel);
+        }
+
+        return $stack;
     }
 
     /**

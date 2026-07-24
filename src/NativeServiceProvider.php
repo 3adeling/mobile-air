@@ -699,6 +699,7 @@ class NativeServiceProvider extends PackageServiceProvider
             'side_nav_item' => Elements\SideNavItem::class,
             'side_nav_group' => Elements\SideNavGroup::class,
             'side_nav_header' => Elements\SideNavHeader::class,
+            'fab' => Elements\Fab::class,
 
             // Gesture / interaction
             'gesture_area' => Elements\GestureArea::class,
