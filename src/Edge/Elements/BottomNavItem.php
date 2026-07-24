@@ -30,8 +30,15 @@ class BottomNavItem extends Element
 
     public function applyAttributes(array $attrs): void
     {
-        if (isset($attrs['badge-color']) && ! isset($attrs['badgeColor'])) {
-            $attrs['badgeColor'] = $attrs['badge-color'];
+        foreach ([
+            'badge-color' => 'badgeColor',
+            'material-variant' => 'material_variant',
+            'search-placeholder' => 'search_placeholder',
+            'search-debounce-ms' => 'search_debounce_ms',
+        ] as $kebab => $canonical) {
+            if (isset($attrs[$kebab]) && ! isset($attrs[$canonical])) {
+                $attrs[$canonical] = $attrs[$kebab];
+            }
         }
 
         foreach (['id', 'icon', 'material_variant', 'url', 'label', 'badge', 'badgeColor'] as $key) {
@@ -107,6 +114,24 @@ class BottomNavItem extends Element
     public function getUrl(): string
     {
         return (string) ($this->props['url'] ?? '');
+    }
+
+    /** Whether this tab is currently marked active (highlighted). */
+    public function isActive(): bool
+    {
+        return (bool) ($this->props['active'] ?? false);
+    }
+
+    /**
+     * Toggle the active highlight. Used by `TabBar::highlight()` when the
+     * bar was reconstructed from an inline `<native:bottom-nav>` and no
+     * item carried an explicit `active` attribute.
+     */
+    public function setActive(bool $active): static
+    {
+        $this->props['active'] = $active;
+
+        return $this;
     }
 
     protected function resolveProps(CallbackRegistry $registry): array

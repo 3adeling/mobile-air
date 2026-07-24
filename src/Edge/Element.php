@@ -68,6 +68,29 @@ abstract class Element
      */
     protected array $extraProps = [];
 
+    /**
+     * Inline-chrome placement marker — set by the boolean `custom`
+     * attribute on `<native:top-bar>` / `<native:bottom-nav>` /
+     * `<native:side-nav>`. A custom chrome element stays in the content
+     * tree and renders as an ordinary drawn element (the Column-style
+     * custom chrome), instead of being hoisted onto the native chrome
+     * root. It still suppresses the layout's bar for that slot. See
+     * NativeComponent::wrapWithChrome().
+     */
+    protected bool $customChrome = false;
+
+    public function markCustomChrome(bool $custom = true): static
+    {
+        $this->customChrome = $custom;
+
+        return $this;
+    }
+
+    public function isCustomChrome(): bool
+    {
+        return $this->customChrome;
+    }
+
     // ── Attribute hydration ──────────────────────────────
 
     /**

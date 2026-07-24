@@ -18,6 +18,10 @@ class TopBarAction extends Element
 
     public function applyAttributes(array $attrs): void
     {
+        if (isset($attrs['material-variant']) && ! isset($attrs['material_variant'])) {
+            $attrs['material_variant'] = $attrs['material-variant'];
+        }
+
         foreach (['id', 'icon', 'material_variant', 'label', 'url', 'event'] as $key) {
             if (isset($attrs[$key])) {
                 $this->props[$key] = $attrs[$key];

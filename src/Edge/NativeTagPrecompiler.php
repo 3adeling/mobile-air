@@ -29,18 +29,6 @@ class NativeTagPrecompiler
         'webview' => 'html',
     ];
 
-    /**
-     * Edge navigation components — handled via Edge::add()/startContext()/endContext()
-     * instead of NativeElementCollector, so Edge.Set bridge calls work in WebView mode.
-     */
-    private const EDGE_CONTAINER_TAGS = [
-        'top-bar', 'bottom-nav', 'side-nav', 'side-nav-group',
-    ];
-
-    private const EDGE_LEAF_TAGS = [
-        'top-bar-action', 'bottom-nav-item', 'side-nav-item', 'side-nav-header',
-    ];
-
     /** camelCase modifier → Transition enum value */
     private const NAVIGATE_TRANSITIONS = [
         'fade' => 'fade',
@@ -390,13 +378,6 @@ class NativeTagPrecompiler
 
     private function compileSelfClosing(string $tag, string $rawAttrs): string
     {
-        if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
-            $type = $this->tagToType($tag);
-            $attrs = $this->compileAttributes($rawAttrs);
-
-            return '<?php \\Native\\Mobile\\Edge\\Edge::add(\''.$type.'\', '.$attrs.'); ?>';
-        }
-
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
@@ -436,20 +417,6 @@ class NativeTagPrecompiler
 
     private function compileOpening(string $tag, string $rawAttrs): string
     {
-        if (in_array($tag, self::EDGE_CONTAINER_TAGS, true)) {
-            $attrs = $this->compileAttributes($rawAttrs);
-            $varTag = str_replace('-', '_', $tag);
-
-            return "<?php \$__edgeCtx_{$varTag} = \\Native\\Mobile\\Edge\\Edge::startContext(); \$__edgeAttrs_{$varTag} = {$attrs}; ?>";
-        }
-
-        if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
-            $type = $this->tagToType($tag);
-            $attrs = $this->compileAttributes($rawAttrs);
-
-            return '<?php \\Native\\Mobile\\Edge\\Edge::add(\''.$type.'\', '.$attrs.'); ?>';
-        }
-
         $type = $this->tagToType($tag);
         $attrs = $this->compileAttributes($rawAttrs);
 
@@ -478,17 +445,6 @@ class NativeTagPrecompiler
 
     private function compileClosing(string $tag): string
     {
-        if (in_array($tag, self::EDGE_CONTAINER_TAGS, true)) {
-            $type = $this->tagToType($tag);
-            $varTag = str_replace('-', '_', $tag);
-
-            return "<?php \\Native\\Mobile\\Edge\\Edge::endContext(\$__edgeCtx_{$varTag}, '{$type}', \$__edgeAttrs_{$varTag}); ?>";
-        }
-
-        if (in_array($tag, self::EDGE_LEAF_TAGS, true)) {
-            return ''; // Leaf tags don't have closing tags in practice, but handle gracefully
-        }
-
         // <text> close — emit its captured inline runs (see textOpen).
         if ($tag === 'text') {
             return '<?php '.self::C.'::textClose(); ?>';
