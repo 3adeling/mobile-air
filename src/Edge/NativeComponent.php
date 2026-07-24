@@ -376,21 +376,42 @@ abstract class NativeComponent
     }
 
     /**
-     * Wrap the screen's element tree with chrome from its layout.
+     * Wrap the screen's element tree with chrome from its layout and/or
+     * inline chrome in its blade.
      *
      * - Looks up the layout class declared by the route or the component.
-     * - Asks the layout for a NavBar / TabBar.
-     * - Merges in the screen's navigationOptions() and pendingNavBarState.
-     * - Skips chrome the screen overrode inline in its blade
-     *   (i.e., a top-level <native:top-bar> or <native:bottom-nav>).
-     * - Wraps everything in a Column.fill().safeArea() with the chrome
-     *   stacked above and below the content.
+     * - Hoists inline `<native:top-bar>` / `<native:bottom-nav>` elements
+     *   out of the content tree and reconstructs NavBar / TabBar builders
+     *   from them (`fromElement`) — an inline bar WINS over the layout's
+     *   builder bar for that slot, while the other slot still comes from
+     *   the layout. Hoisted bars always drive the native-chrome sentinels
+     *   (NativeRootStack / NativeRootTabs), even with no layout at all.
+     * - A bar tagged with the boolean `custom` attribute is NOT hoisted:
+     *   it stays in the content tree and renders as an ordinary drawn
+     *   element, but still suppresses the layout's bar for that slot.
+     * - Otherwise asks the layout for a NavBar / TabBar, merges in the
+     *   screen's navigationOptions() and pendingNavBarState, and wraps
+     *   via native chrome or the custom Column path per
+     *   `NativeLayout::usesNativeChrome()`.
      */
     protected function wrapWithChrome(Element $content): Element
     {
         $layout = ($this->nativeLayout !== null && class_exists($this->nativeLayout))
             ? new ($this->nativeLayout)()
             : null;
+
+        // ── Inline chrome (screen blade) ──
+        // Non-custom bars are hoisted out of the content tree so they
+        // aren't drawn inline AND translated into the same native-root
+        // prop shape the layout builders produce. Custom bars stay put.
+        [$inlineTopBar, $content] = $this->hoistInlineBar($content, 'top_bar');
+        [$inlineBottomNav, $content] = $this->hoistInlineBar($content, 'bottom_nav');
+        [$inlineSideNav, $content] = $this->hoistInlineBar($content, 'side_nav');
+
+        // Whatever bars remain in the tree are `custom` — the dev took
+        // manual control of that slot, so the layout's bar is suppressed.
+        $hasCustomTopBar = $this->treeContainsType($content, 'top_bar');
+        $hasCustomBottomNav = $this->treeContainsType($content, 'bottom_nav');
 
         // Base case: no layout (or no bars) → the screen content is the root,
         // and it is the dev's own tree, so we must NOT append siblings to it
@@ -399,66 +420,129 @@ abstract class NativeComponent
         $root = $content;
         $rootOwnsChildren = false;
 
-        if ($layout !== null) {
-            // If the screen blade already contains TopBar / BottomNav at the
-            // root level, the dev took manual control — skip layout chrome
-            // for those slots.
-            $hasInlineNavBar = $this->treeContainsType($content, 'top_bar');
-            $hasInlineTabBar = $this->treeContainsType($content, 'bottom_nav');
+        // Inline (non-custom) chrome always renders through the native
+        // sentinels; a layout additionally opts its own bars in via
+        // usesNativeChrome().
+        $usesNativeChrome = $inlineTopBar !== null
+            || $inlineBottomNav !== null
+            || ($layout?->usesNativeChrome() ?? false);
 
-            $navBar = null;
-            if (! $hasInlineNavBar) {
-                $navBar = $layout->navBar($this);
-                // Per-screen opt-out ($hidesNavBar shortcut + navigationOptions()
-                // builder). On this custom-Column path hiding is identical to
-                // the layout returning null. The native-chrome path instead
-                // keeps the bar config and folds a `hide_nav_bar` prop onto
-                // the sentinel — the NavigationStack must survive for push /
-                // pop to keep working.
-                if ($navBar !== null && ! $layout->usesNativeChrome() && $this->shouldHideNavBar()) {
-                    $navBar = null;
-                }
-                if ($navBar !== null) {
-                    $navBar->mergeOptions($this->navigationOptions());
-                    if (! empty($this->nativePendingNavBarState)) {
-                        $navBar->mergeState($this->nativePendingNavBarState);
-                    }
-                    // Layout-wide chrome font — loses to any ->font() the
-                    // bar (or per-screen options/state) already set.
-                    $navBar->defaultFont($layout->chromeFont());
-                }
+        $navBar = null;
+        if ($inlineTopBar !== null) {
+            $navBar = NavBar::fromElement($inlineTopBar);
+            // Layout-wide chrome font still applies as a default — the
+            // inline bar's own font-name attribute wins.
+            $navBar->defaultFont($layout?->chromeFont());
+        } elseif (! $hasCustomTopBar && $layout !== null) {
+            $navBar = $layout->navBar($this);
+            // Per-screen opt-out ($hidesNavBar shortcut + navigationOptions()
+            // builder). On the custom-Column path hiding is identical to
+            // the layout returning null. The native-chrome path instead
+            // keeps the bar config and folds a `hide_nav_bar` prop onto
+            // the sentinel — the NavigationStack must survive for push /
+            // pop to keep working.
+            if ($navBar !== null && ! $usesNativeChrome && $this->shouldHideNavBar()) {
+                $navBar = null;
             }
-
-            $tabBar = null;
-            if (! $hasInlineTabBar) {
-                $tabBar = $layout->tabBar($this);
-                if ($tabBar !== null) {
-                    $currentUri = $this->nativeRouter?->currentUri();
-                    if ($currentUri !== null) {
-                        $tabBar->highlight($currentUri);
-                    }
-                    $tabBar->defaultFont($layout->chromeFont());
+            if ($navBar !== null) {
+                $navBar->mergeOptions($this->navigationOptions());
+                if (! empty($this->nativePendingNavBarState)) {
+                    $navBar->mergeState($this->nativePendingNavBarState);
                 }
-            }
-
-            if ($navBar !== null || $tabBar !== null) {
-                if ($layout->usesNativeChrome()) {
-                    // Native chrome path: when a layout opts in via
-                    // `usesNativeChrome()`, emit a `native_root_*` sentinel
-                    // element carrying the bar config as serialized props
-                    // instead of a Column of [navBar, content, tabBar]. The
-                    // native iOS / Android renderers for those types take over
-                    // and use NavigationStack / TabView / NavHost / Scaffold to
-                    // render chrome system-natively.
-                    $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
-                } else {
-                    $root = $this->buildChromeColumn($content, $navBar, $tabBar);
-                }
-                $rootOwnsChildren = true;
+                // Layout-wide chrome font — loses to any ->font() the
+                // bar (or per-screen options/state) already set.
+                $navBar->defaultFont($layout->chromeFont());
             }
         }
 
+        $tabBar = null;
+        if ($inlineBottomNav !== null) {
+            $tabBar = TabBar::fromElement($inlineBottomNav);
+            $tabBar->defaultFont($layout?->chromeFont());
+            // Auto-highlight the tab owning the current URI — unless the
+            // blade marked one `active` explicitly (highlight() respects
+            // explicit choices on inline items).
+            $currentUri = $this->nativeRouter?->currentUri();
+            if ($currentUri !== null) {
+                $tabBar->highlight($currentUri);
+            }
+        } elseif (! $hasCustomBottomNav && $layout !== null) {
+            $tabBar = $layout->tabBar($this);
+            if ($tabBar !== null) {
+                $currentUri = $this->nativeRouter?->currentUri();
+                if ($currentUri !== null) {
+                    $tabBar->highlight($currentUri);
+                }
+                $tabBar->defaultFont($layout->chromeFont());
+            }
+        }
+
+        if ($navBar !== null || $tabBar !== null) {
+            if ($usesNativeChrome) {
+                // Native chrome path: emit a `native_root_*` sentinel
+                // element carrying the bar config as serialized props
+                // instead of a Column of [navBar, content, tabBar]. The
+                // native iOS / Android renderers for those types take over
+                // and use NavigationStack / TabView / NavHost / Scaffold to
+                // render chrome system-natively.
+                $root = $this->wrapWithNativeChrome($content, $navBar, $tabBar, $layout);
+            } else {
+                $root = $this->buildChromeColumn($content, $navBar, $tabBar);
+            }
+            $rootOwnsChildren = true;
+        }
+
+        // A hoisted side_nav has no layout-builder counterpart; re-attach
+        // it as a sentinel child of the chrome root so a drawer host
+        // (plugin / NativeRootHostRegistry consumer) can pull it out —
+        // mirroring how bottom_bar and chrome-contributor sentinels ride
+        // on the root outside the flex flow.
+        if ($inlineSideNav !== null) {
+            if (! $rootOwnsChildren) {
+                $wrapper = Column::make()->fill()->safeArea();
+                $root->flexGrow(1);
+                $wrapper->addChild($root);
+                $root = $wrapper;
+                $rootOwnsChildren = true;
+            }
+            $root->addChild($inlineSideNav);
+        }
+
         return $this->applyChromeContributors($root, $layout, $rootOwnsChildren);
+    }
+
+    /**
+     * Find (and remove) an inline chrome element of `$type` in the screen
+     * tree, returning `[bar|null, content]`. Matches the scope of
+     * `treeContainsType`: the root itself, or a direct child (the
+     * collector's implicit Column wrapper puts top-level blade tags
+     * there). Elements marked `custom` are left in place — they render
+     * as ordinary drawn elements.
+     *
+     * @return array{0: ?Element, 1: Element}
+     */
+    protected function hoistInlineBar(Element $content, string $type): array
+    {
+        // Root IS the bar (a blade whose only top-level tag is the bar).
+        if ($content->getType() === $type && ! $content->isCustomChrome()) {
+            return [$content, Column::make()->fill()];
+        }
+
+        $found = null;
+        $remaining = [];
+        foreach ($content->getChildren() as $child) {
+            if ($found === null && $child->getType() === $type && ! $child->isCustomChrome()) {
+                $found = $child;
+
+                continue;
+            }
+            $remaining[] = $child;
+        }
+        if ($found !== null) {
+            $content->setChildren($remaining);
+        }
+
+        return [$found, $content];
     }
 
     /**
@@ -563,7 +647,7 @@ abstract class NativeComponent
         Element $content,
         ?NavBar $navBar,
         ?TabBar $tabBar,
-        NativeLayout $layout,
+        ?NativeLayout $layout,
     ): Element {
         if ($tabBar !== null) {
             $root = NativeRootTabs::make();
@@ -649,23 +733,24 @@ abstract class NativeComponent
 
             $root->applyAttributes($attrs);
 
-            // Tab items as bottom_nav_item children. For the search-
-            // role tab we inject the resolved corpus above; when it's
-            // null (screen opted out — neither `searchItems()` nor
+            // Tab items as bottom_nav_item children — builder tabs and
+            // prebuilt inline items uniformly via tabElements(). For the
+            // search-role tab we inject the resolved corpus above; when
+            // it's null (screen opted out — neither `searchItems()` nor
             // `onSearchQuery()` overridden), the iOS / Android
             // renderer hides the search tab via the sticky-inclusion
             // pattern (visible only when currently selected, so the
             // TabView reconciliation stays clean).
-            foreach ($tabBar->getTabs() as $tab) {
-                if ($tab->isSearchTab() && $screenSearchItems !== null) {
-                    $tab->setSearchItems($screenSearchItems);
+            foreach ($tabBar->tabElements() as $item) {
+                if ($item->isSearchTab() && $screenSearchItems !== null) {
+                    $item->setRawSearchItems($screenSearchItems);
                 }
-                $root->addChild($tab->toElement());
+                $root->addChild($item);
             }
             // NavBar actions (if any) as top_bar_action children.
             if ($navBar !== null) {
-                foreach ($navBar->getActions() as $action) {
-                    $root->addChild($action->toElement());
+                foreach ($navBar->actionElements() as $action) {
+                    $root->addChild($action);
                 }
                 // Optional custom principal-slot content (logo / titleView)
                 // wrapped in a `TopBarTitle` marker so the renderer renders it
@@ -678,7 +763,7 @@ abstract class NativeComponent
             // (Apple's MiniPlayer pattern). Wrapped in a `TabAccessory`
             // marker element so the renderer can pick it out of children
             // alongside tabs and screen content.
-            $accessory = $layout->tabBarAccessory($this);
+            $accessory = $layout?->tabBarAccessory($this);
             if ($accessory !== null) {
                 $wrapper = TabAccessory::make();
                 $wrapper->addChild($accessory);
@@ -713,8 +798,8 @@ abstract class NativeComponent
                 $attrs['hideNavBar'] = true;
             }
             $root->applyAttributes($attrs);
-            foreach ($navBar->getActions() as $action) {
-                $root->addChild($action->toElement());
+            foreach ($navBar->actionElements() as $action) {
+                $root->addChild($action);
             }
             // Optional custom principal-slot content (logo / titleView).
             if (($titleEl = $this->topBarTitleElement($navBar)) !== null) {
@@ -818,14 +903,14 @@ abstract class NativeComponent
      * `Scaffold(bottomBar=)` + `imePadding()` (Android), which keeps it above
      * the software keyboard using each platform's native mechanism.
      */
-    protected function resolveBottomBar(Element $content, NativeLayout $layout): ?Element
+    protected function resolveBottomBar(Element $content, ?NativeLayout $layout): ?Element
     {
         $inline = $this->extractDirectChildOfType($content, 'bottom_bar');
         if ($inline !== null) {
             return $inline;
         }
 
-        $layoutBar = $layout->bottomBar($this);
+        $layoutBar = $layout?->bottomBar($this);
         if ($layoutBar !== null) {
             $wrapper = BottomBar::make();
             $wrapper->addChild($layoutBar);
