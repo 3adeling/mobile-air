@@ -2,7 +2,6 @@
 
 namespace Native\Mobile;
 
-use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Console\ServeCommand;
 use Illuminate\Support\Facades\Blade;
@@ -41,7 +40,6 @@ use Native\Mobile\Edge\Elements;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\System\AppearanceChanged;
-use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 use Native\Mobile\Plugins\Compilers\AndroidPluginCompiler;
 use Native\Mobile\Plugins\Compilers\IOSPluginCompiler;
 use Native\Mobile\Plugins\PluginDiscovery;
@@ -243,7 +241,6 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->registerNativeComponents();
         $this->registerCoreElements();
         $this->registerUiPluginComponents();
-        $this->registerMiddleware();
         $this->registerFilesystems();
         $this->registerBladeDirectives();
         $this->configureViteHotFile();
@@ -431,12 +428,6 @@ class NativeServiceProvider extends PackageServiceProvider
                 }
             ?>";
         });
-    }
-
-    protected function registerMiddleware(): void
-    {
-        $kernel = $this->app->make(Kernel::class);
-        $kernel->pushMiddleware(RenderEdgeComponents::class);
     }
 
     protected function registerFilesystems(): void
@@ -772,7 +763,7 @@ class NativeServiceProvider extends PackageServiceProvider
             // Convert BottomNav -> bottom-nav
             $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', $className)), '-');
 
-            // Build the full namespaced class name (e.g., Native\Mobile\NativeUI\Components\Navigation\BottomNav)
+            // Build the full namespaced class name (e.g., Native\Mobile\Edge\Components\Native\Column)
             $componentClass = 'Native\\Mobile\\Edge\\Components\\'.str_replace('/', '\\', $classPath);
 
             if (class_exists($componentClass)) {
