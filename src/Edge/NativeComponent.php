@@ -2935,8 +2935,12 @@ abstract class NativeComponent
                 // The child-scope guard in fromView() emits in place.
                 $this->fromView($result);
             } elseif ($result !== NativeElementCollector::scopeMarker()) {
-                // render() built a programmatic Element tree — attach it.
-                NativeElementCollector::attachElement($result);
+                // render() built a programmatic Element tree — attach it,
+                // pinned to this child's registry (toArray() propagates the
+                // pin to descendants) so its callbacks dispatch back here.
+                NativeElementCollector::attachElement(
+                    $result->ownCallbacks($this->nativeCallbacks)
+                );
             }
 
             $this->endChildComponentFrame();

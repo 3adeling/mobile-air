@@ -8,6 +8,8 @@ use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Testing\Native;
 use Tests\Fixtures\Edge\BadgeChild;
 use Tests\Fixtures\Edge\NestedHostScreen;
+use Tests\Fixtures\Edge\ProgrammaticChild;
+use Tests\Fixtures\Edge\ProgrammaticHostScreen;
 use Tests\Fixtures\Edge\SlotHostScreen;
 use Tests\Fixtures\Edge\UnkeyedHostScreen;
 use Tests\Fixtures\Edge\UnknownTagScreen;
@@ -24,6 +26,7 @@ beforeEach(function () {
     ComponentRegistry::components([
         'user-card-child' => UserCardChild::class,
         'badge-child' => BadgeChild::class,
+        'programmatic-child' => ProgrammaticChild::class,
     ]);
 
     UserCardChild::$events = [];
@@ -176,6 +179,17 @@ it('renders child-in-child components', function () {
         ->assertSee('Poke solo')
         ->assertSee('Poke a')
         ->assertSee('Poke b');
+});
+
+it('routes callbacks from a programmatic child render to the child instance', function () {
+    $screen = Native::test(ProgrammaticHostScreen::class)
+        ->assertSee('Programmatic taps: 0')
+        ->tap('prog-tap')
+        ->assertSee('Programmatic taps: 1');
+
+    // Same method name exists on the screen — ownership is by registry.
+    expect($screen->instance()->screenTaps)->toBe(0);
+    expect(nestedChildrenOf($screen->instance())['programmatic-child|i:0']->taps)->toBe(1);
 });
 
 // ── Events up ───────────────────────────────────────
