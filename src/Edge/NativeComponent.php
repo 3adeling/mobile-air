@@ -570,17 +570,36 @@ abstract class NativeComponent
     /**
      * Hoist a top-level `<native:fab>` (an `Elements\Fab` — wire type
      * `pressable`, so type-matching can't find it) out of the content's
-     * flex flow and float it over the content in a Stack overlay. The fab
-     * styles itself (absolute bottom-corner insets); this just guarantees
-     * the insets resolve against the full content area. Scope matches the
-     * other inline-chrome hoists: direct children of the root. A fab
-     * nested deeper stays where it is and positions within its own
-     * container.
+     * flex flow and float it over the content. The fab styles itself
+     * (absolute bottom-corner insets); this just guarantees the insets
+     * resolve against the full content area. Scope matches the other
+     * inline-chrome hoists: direct children of the root. A fab nested
+     * deeper stays where it is and positions within its own container.
+     *
+     * When the content root is a full-size flex container (which includes
+     * the collector's implicit multi-root Column — always `->fill()`),
+     * the fab simply becomes the root's LAST child: it is absolutely
+     * positioned, both platforms' flex renderers keep absolute children
+     * out of flow measurement AND draw them last (on top), and its insets
+     * resolve against the root = the full content area. Crucially the
+     * measured content tree stays byte-identical to the no-fab tree.
+     *
+     * We must NOT wrap such content in a `Stack` overlay (the previous
+     * approach): the iOS stack layout measures a non-scroll child via an
+     * `.unspecified` proposal, so a `scroll_view` nested one level down
+     * (stack → column → scroll_view) gets measured at its intrinsic
+     * CONTENT height instead of the viewport — the scrollable range
+     * collapses to ~one viewport and the list rubber-bands ("elastic"
+     * scroll that never reaches the bottom). Only roots that cannot host
+     * an overlay child (a `scroll_view` root would render the fab as a
+     * list item, plugin roots may treat children specially) still get the
+     * Stack wrapper — the shape the iOS stack layout explicitly supports
+     * (it skips scroll_view children in sizeThatFits and honors their
+     * fill modes in placement).
      */
     protected function hoistFabOverlay(Element $content): Element
     {
         $fab = null;
-        $sentinels = [];
         $remaining = [];
         foreach ($content->getChildren() as $child) {
             if ($fab === null && $child instanceof Elements\Fab) {
@@ -588,6 +607,33 @@ abstract class NativeComponent
 
                 continue;
             }
+            $remaining[] = $child;
+        }
+        if ($fab === null) {
+            return $content;
+        }
+
+        $layout = $content->getLayout();
+        $isFullSizeFlexRoot = in_array($content->getType(), ['column', 'row', 'stack'], true)
+            && ($layout['width'] ?? null) === 'fill'
+            && ($layout['height'] ?? null) === 'fill';
+
+        if ($isFullSizeFlexRoot) {
+            // Re-append LAST so the fab draws above its siblings (both
+            // renderers honor child order for z). Everything else —
+            // including any `<native:bottom-bar>` sentinel, which stays a
+            // direct child of the tree handed to `resolveBottomBar` —
+            // keeps its position; the flow layout is untouched.
+            $remaining[] = $fab;
+            $content->setChildren($remaining);
+
+            return $content;
+        }
+
+        // Non-flex root — float the fab over it in a Stack overlay.
+        $sentinels = [];
+        $kept = [];
+        foreach ($remaining as $child) {
             // Keep hoistable sentinels (inline `<native:bottom-bar>`)
             // discoverable as direct children of the tree handed to
             // `resolveBottomBar` — lift them onto the Stack alongside
@@ -597,12 +643,21 @@ abstract class NativeComponent
 
                 continue;
             }
-            $remaining[] = $child;
+            $kept[] = $child;
         }
-        if ($fab === null) {
-            return $content;
+        $content->setChildren($kept);
+
+        // The content used to receive the viewport proposal as the direct
+        // chrome child; inside the Stack it must opt into fill explicitly
+        // or the stack places it at its intrinsic content size (breaking
+        // a scroll_view root's viewport). Only fill dimensions the dev
+        // left unsized — explicit sizes still win.
+        if (! isset($layout['width'])) {
+            $content->fillWidth();
         }
-        $content->setChildren($remaining);
+        if (! isset($layout['height'])) {
+            $content->fillHeight();
+        }
 
         $stack = Elements\Stack::make();
         $stack->fill();

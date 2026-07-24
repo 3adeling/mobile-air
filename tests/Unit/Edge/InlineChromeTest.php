@@ -14,6 +14,9 @@ use Tests\Fixtures\Edge\CustomTopBarScreen;
 use Tests\Fixtures\Edge\FabScreen;
 use Tests\Fixtures\Edge\InlineBottomNavScreen;
 use Tests\Fixtures\Edge\InlineTopBarScreen;
+use Tests\Fixtures\Edge\ScrollFabScreen;
+use Tests\Fixtures\Edge\ScrollNoFabScreen;
+use Tests\Fixtures\Edge\ScrollRootFabScreen;
 
 /**
  * Composable blade chrome — inline `<native:top-bar>` / `<native:bottom-nav>`
@@ -219,9 +222,12 @@ it('renders a custom top-bar as a plain drawn element when there is no layout', 
 
 // ── Fab ─────────────────────────────────────────────
 
-it('hoists a top-level fab into a Stack overlay composed from primitives', function () {
+it('floats a top-level fab as the last absolute child of a full-size flex root', function () {
     Native::test(FabScreen::class)
-        ->assertElement('stack')
+        // No Stack wrapper for a fill-sized flex root — the fab overlays
+        // via absolute positioning so the content tree keeps the exact
+        // shape (and scroll geometry) it has without a fab.
+        ->assertMissingElement('stack')
         // The fab IS a pressable on the wire: absolutely positioned,
         // circular, elevated, with the icon as a child.
         ->assertElement('pressable', function (array $n) {
@@ -231,6 +237,16 @@ it('hoists a top-level fab into a Stack overlay composed from primitives', funct
                 && collect($n['children'] ?? [])->contains(fn ($c) => ($c['type'] ?? null) === 'icon')
                 && isset($n['on_press']);
         })
+        // Draw order = z order: the fab must be the LAST child of the
+        // content root so it renders above its siblings.
+        ->assertElement('column', function (array $n) {
+            $last = collect($n['children'] ?? [])->last();
+
+            return ($n['layout']['width'] ?? null) === 'fill'
+                && ($n['layout']['height'] ?? null) === 'fill'
+                && ($last['type'] ?? null) === 'pressable'
+                && ($last['layout']['position_type'] ?? null) === 1;
+        })
         ->assertMissingElement('fab')
         ->assertSee('Fab body');
 });
@@ -239,4 +255,95 @@ it('fires the fab tap handler', function () {
     Native::test(FabScreen::class)
         ->tap('create-fab')
         ->assertSet('created', 1);
+});
+
+// Scroll regression: a top-bar + full-size scroll-view + fab screen used
+// to get its content wrapped in a Stack overlay. The iOS stack layout
+// measures non-scroll children with an `.unspecified` proposal, so the
+// scroll_view one level down (stack → column → scroll_view) was sized to
+// its intrinsic CONTENT height instead of the viewport — the scrollable
+// range collapsed and the list rubber-banded ("elastic" scroll, bottom
+// unreachable). The content tree must stay byte-identical to the no-fab
+// tree, with the fab riding along as a trailing absolute overlay child.
+it('keeps the scroll-view tree identical to the no-fab tree when a fab is hoisted', function () {
+    $withFab = Native::test(ScrollFabScreen::class)->tree();
+    $without = Native::test(ScrollNoFabScreen::class)->tree();
+
+    // No Stack wrapper anywhere.
+    Native::test(ScrollFabScreen::class)->assertMissingElement('stack');
+
+    // Same chrome root; the content child is the implicit fill Column in
+    // both trees.
+    $fabContent = collect($withFab['children'])->firstWhere('type', 'column');
+    $plainContent = collect($without['children'])->firstWhere('type', 'column');
+    expect($fabContent)->not->toBeNull();
+    expect($plainContent)->not->toBeNull();
+
+    // The fab is the LAST child of the content root (absolute overlay,
+    // drawn on top); every child before it matches the no-fab tree
+    // exactly — same types, same ids, same layout — so the native
+    // renderers measure the scroll viewport identically with or without
+    // the fab.
+    $fabChildren = $fabContent['children'];
+    $fab = array_pop($fabChildren);
+    expect($fab['type'])->toBe('pressable');
+    expect($fab['layout']['position_type'] ?? null)->toBe(1);
+    expect($fabChildren)->toEqual($plainContent['children']);
+
+    // And the scroll-view itself sits DIRECTLY under the content root,
+    // still declaring full size.
+    $scroll = collect($fabChildren)->firstWhere('type', 'scroll_view');
+    expect($scroll)->not->toBeNull();
+    expect($scroll['layout']['width'] ?? null)->toBe('fill');
+    expect($scroll['layout']['height'] ?? null)->toBe('fill');
+});
+
+it('adds new scroll children without disturbing the hoisted fab overlay', function () {
+    // The reporter hit the bug "when adding more tasks" — assert the
+    // grown tree keeps the same shape: still no Stack, the new card
+    // rendered inside the scroll-view, fab still the trailing absolute
+    // child of the content root.
+    Native::test(ScrollFabScreen::class)
+        ->tap('add-task')
+        ->assertSet('tasks', ['One', 'Two', 'Three', 'Task 4'])
+        ->assertMissingElement('stack')
+        ->assertElement('scroll_view', function (array $n) {
+            return collect($n['children'] ?? [])
+                ->contains(fn ($c) => ($c['children'][0]['props']['text'] ?? null) === 'Task 4');
+        })
+        ->assertElement('column', function (array $n) {
+            $last = collect($n['children'] ?? [])->last();
+
+            return ($n['layout']['height'] ?? null) === 'fill'
+                && ($last['type'] ?? null) === 'pressable'
+                && ($last['layout']['position_type'] ?? null) === 1;
+        });
+});
+
+it('still wraps a scroll-view ROOT in a Stack overlay, forced to fill', function () {
+    // When the blade's single root IS the scroll-view (fab declared
+    // inside it), the fab cannot remain a scroll child — the Stack
+    // overlay is required. The scroll-view is then forced to fill the
+    // stack so it keeps viewport-bounded scrolling (it would otherwise
+    // be placed at its intrinsic content size).
+    Native::test(ScrollRootFabScreen::class)
+        ->assertElement('stack', function (array $n) {
+            $types = collect($n['children'] ?? [])->pluck('type');
+
+            return ($n['layout']['width'] ?? null) === 'fill'
+                && ($n['layout']['height'] ?? null) === 'fill'
+                && $types->first() === 'scroll_view'
+                && $types->contains('pressable');
+        })
+        ->assertElement('scroll_view', function (array $n) {
+            // Forced fill — mirrors the viewport proposal it received as
+            // the direct chrome content before the Stack existed.
+            return ($n['layout']['width'] ?? null) === 'fill'
+                && ($n['layout']['height'] ?? null) === 'fill'
+                // The fab must no longer be one of the scroll children.
+                && collect($n['children'] ?? [])->every(
+                    fn ($c) => ($c['layout']['position_type'] ?? null) !== 1
+                );
+        })
+        ->assertSee('One');
 });
