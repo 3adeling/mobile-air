@@ -9,6 +9,7 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
+use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
@@ -157,6 +158,11 @@ class TestableComponent
         // previous test's platform); the parse cache isn't platform-keyed.
         TailwindParser::setPlatform($platform);
         TailwindParser::clearCache();
+
+        // Same for platform-resolved icons (IconResolver & friends read
+        // Platform::current()) — `platform:` means "pretend we're on that
+        // OS" everywhere, not just for Tailwind variants.
+        Platform::set($platform);
 
         $component = new $componentClass;
 

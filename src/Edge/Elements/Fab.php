@@ -127,11 +127,16 @@ class Fab extends Pressable
         $contentColor = isset($attrs['contentColor']) ? (string) $attrs['contentColor'] : null;
 
         // ── Content ──
-        if (isset($attrs['icon'])) {
+        // `:ios-icon` / `:android-icon` (or `<icon>`-style `:ios` /
+        // `:android`) — enum case or raw string; usable with or without
+        // the shared `icon` fallback.
+        $iosIcon = $attrs['ios-icon'] ?? $attrs['iosIcon'] ?? $attrs['ios'] ?? null;
+        $androidIcon = $attrs['android-icon'] ?? $attrs['androidIcon'] ?? $attrs['android'] ?? null;
+        if (isset($attrs['icon']) || $iosIcon !== null || $androidIcon !== null) {
             $icon = Icon::make(
-                (string) $attrs['icon'],
-                $attrs['ios'] ?? null,
-                $attrs['android'] ?? null,
+                isset($attrs['icon']) ? (string) $attrs['icon'] : null,
+                $iosIcon,
+                $androidIcon,
             )->size($iconSize);
             $this->applyContentColor($icon, $contentColor, 'text-theme-on-primary');
             $this->addChild($icon);
