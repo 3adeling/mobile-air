@@ -35,8 +35,10 @@ use Native\Mobile\Commands\TailCommand;
 use Native\Mobile\Commands\ValidateCommand;
 use Native\Mobile\Commands\VersionCommand;
 use Native\Mobile\Commands\WatchCommand;
+use Native\Mobile\Edge\ComponentRegistry;
 use Native\Mobile\Edge\ElementRegistry;
 use Native\Mobile\Edge\Elements;
+use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NativeTagPrecompiler;
 use Native\Mobile\Events\System\AppearanceChanged;
@@ -239,6 +241,7 @@ class NativeServiceProvider extends PackageServiceProvider
         $this->setupComposerPostUpdateScript();
         $this->registerSystemEventListeners();
         $this->registerNativeComponents();
+        $this->registerChildComponents();
         $this->registerCoreElements();
         $this->registerUiPluginComponents();
         $this->registerFilesystems();
@@ -726,6 +729,51 @@ class NativeServiceProvider extends PackageServiceProvider
 
         // Define the global nativephp_call function
         require_once __DIR__.'/jump_bridge_functions.php';
+    }
+
+    /**
+     * Auto-discover app **child components** — NativeComponent subclasses
+     * under app/NativeComponents (the `native:make` convention) — and
+     * register them with the ComponentRegistry so `<native:user-card>`
+     * mounts App\NativeComponents\UserCard as a nested component.
+     *
+     * Explicit ComponentRegistry::components() registrations made before
+     * boot are never overridden, and registered element types always win
+     * over component tags at resolution time (see NativeElementCollector).
+     */
+    protected function registerChildComponents(): void
+    {
+        $componentPath = app_path('NativeComponents');
+
+        if (! is_dir($componentPath)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($componentPath, \RecursiveDirectoryIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+
+            $relativePath = str_replace($componentPath.'/', '', $file->getPathname());
+            $classPath = substr($relativePath, 0, -4);
+
+            // Tag name from the class basename: UserCard → user-card.
+            $kebabName = ltrim(strtolower(preg_replace('/[A-Z]/', '-$0', basename($classPath))), '-');
+
+            if (ComponentRegistry::has($kebabName)) {
+                continue;
+            }
+
+            $componentClass = 'App\\NativeComponents\\'.str_replace('/', '\\', $classPath);
+
+            if (class_exists($componentClass) && is_subclass_of($componentClass, NativeComponent::class)) {
+                ComponentRegistry::register($kebabName, $componentClass);
+            }
+        }
     }
 
     protected function registerNativeComponents(): void

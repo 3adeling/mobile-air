@@ -162,11 +162,22 @@ abstract class NativeComponent
      */
     private function renderToElement(): Element
     {
+        // Frame bookkeeping for nested child components: occurrence
+        // counters restart, and children whose tags disappeared from
+        // this render are unmounted afterwards. Reconciliation only
+        // runs on success — a throwing render must not tear down child
+        // state the next (recovered) frame still wants.
+        $this->beginChildComponentFrame();
+
         $result = $this->render();
 
-        return $result instanceof View
+        $element = $result instanceof View
             ? $this->fromView($result)
             : $result;
+
+        $this->endChildComponentFrame();
+
+        return $element;
     }
 
     /**
@@ -281,8 +292,20 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $data);
 
+        // Rendering as a nested child component: the parent's tree is live
+        // in the collector, so emit in place — no reset, no chrome, and no
+        // poll drain (a child's `native:poll` rolls up into the screen's
+        // frame-level sync after the full render). The returned marker
+        // tells renderAsChild() there is nothing left to attach.
+        if (NativeElementCollector::inComponentScope()) {
+            $this->renderBladeBoundToSelf("native.{$name}", $viewData);
+
+            return NativeElementCollector::scopeMarker();
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
@@ -311,8 +334,18 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $data);
 
+        // Inside a child component's render the hard reset below would wipe
+        // the parent's live tree — capture() collects the detached subtree
+        // against saved-and-restored collector state instead.
+        if (NativeElementCollector::inComponentScope()) {
+            return NativeElementCollector::capture(
+                fn () => $this->renderBladeBoundToSelf("native.{$name}", $viewData)
+            );
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf("native.{$name}", $viewData);
 
@@ -338,8 +371,16 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
+        // Nested child render — same in-place emission as view() above.
+        if (NativeElementCollector::inComponentScope()) {
+            $this->renderBladeBoundToSelf($view->getName(), $viewData);
+
+            return NativeElementCollector::scopeMarker();
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
 
@@ -367,8 +408,17 @@ abstract class NativeComponent
     {
         $viewData = array_merge($this->getPublicProperties(), $view->getData());
 
+        // Same child-scope safety as partial() — never hard-reset the
+        // parent's live tree from inside a nested component render.
+        if (NativeElementCollector::inComponentScope()) {
+            return NativeElementCollector::capture(
+                fn () => $this->renderBladeBoundToSelf($view->getName(), $viewData)
+            );
+        }
+
         NativeElementCollector::reset();
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
 
         $this->renderBladeBoundToSelf($view->getName(), $viewData);
 
@@ -1270,13 +1320,16 @@ abstract class NativeComponent
         $viewData = array_merge($this->getPublicProperties(), $data);
 
         NativeElementCollector::setCallbacks($this->nativeCallbacks);
+        NativeElementCollector::setOwner($this);
         NativeElementCollector::setStreaming(true);
 
         nphp_frame_begin();
 
         try {
             $t0 = microtime(true);
+            $this->beginChildComponentFrame();
             $this->renderBladeBoundToSelf("native.{$name}", $viewData);
+            $this->endChildComponentFrame();
             $this->syncBladePolls(NativeElementCollector::takePollIntervals());
             $t1 = microtime(true);
 
@@ -1852,6 +1905,13 @@ abstract class NativeComponent
 
     public function unmount(): void
     {
+        // Tear down nested child components first (recursively) — leaving
+        // a screen unmounts its whole component subtree.
+        foreach ($this->nativeChildComponents as $child) {
+            $child->unmount();
+        }
+        $this->nativeChildComponents = [];
+
         // Run cleanup hooks (e.g. vibe unsubscribing from channels/presence
         // rooms) before dropping listeners, so leaving a screen also leaves its
         // channels. Best-effort — a failing hook must not break teardown.
@@ -2320,6 +2380,15 @@ abstract class NativeComponent
 
     public function navigate(string $uri, array $data = []): static
     {
+        // Navigation is a screen-level concern: a nested child forwards to
+        // the screen so the intent lands where the runloop reads it (and
+        // publishFinalState renders the full screen, not the child alone).
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->navigate($uri, $data);
+
+            return $this;
+        }
+
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::NAVIGATE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2329,6 +2398,12 @@ abstract class NativeComponent
 
     public function back(): static
     {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->back();
+
+            return $this;
+        }
         // At the root of the native stack there is nothing to pop — letting
         // the intent through would empty the router's stack, exit the
         // runloop, and strand the user on the blank WebView underneath.
@@ -2354,6 +2429,13 @@ abstract class NativeComponent
 
     public function replace(string $uri, array $data = []): static
     {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->replace($uri, $data);
+
+            return $this;
+        }
+
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::REPLACE, $uri, $data);
         $this->publishFinalState();
         $this->stop();
@@ -2400,6 +2482,13 @@ abstract class NativeComponent
 
     public function transition(Transition $type): static
     {
+        // Screen-level concern — the intent lives on the screen.
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->transition($type);
+
+            return $this;
+        }
+
         if ($this->nativeNavigationIntent) {
             $this->nativeNavigationIntent = new NavigationIntent(
                 $this->nativeNavigationIntent->type,
@@ -2414,6 +2503,13 @@ abstract class NativeComponent
 
     public function exitToWeb(string $uri): void
     {
+        // Screen-level concern — see navigate().
+        if ($this->nativeParentComponent !== null) {
+            $this->rootScreen()->exitToWeb($uri);
+
+            return;
+        }
+
         $this->nativeNavigationIntent = new NavigationIntent(NavigationIntent::EXIT_WEB, $uri);
         $this->stop();
     }
@@ -2825,11 +2921,332 @@ abstract class NativeComponent
         }
     }
 
+    // ── Child components (nested <native:*> component tags) ──
+
+    /**
+     * Live child component instances mounted by this component's render,
+     * keyed by stable identity: the tag's explicit `key` attribute when
+     * given, else tag name + occurrence index within this render. Reused
+     * across frames so a child's own (non-prop) state persists.
+     *
+     * @var array<string, NativeComponent>
+     */
+    protected array $nativeChildComponents = [];
+
+    /** Per-tag occurrence counters for the current render frame. */
+    private array $nativeChildTagOccurrences = [];
+
+    /** Identities mounted during the current render frame. */
+    private array $nativeChildComponentsSeen = [];
+
+    /** The component that mounted this one, or null for a screen. */
+    protected ?NativeComponent $nativeParentComponent = null;
+
+    /**
+     * Tag-level event bindings from `@event="method(...)"` attributes on
+     * THIS component's mounting tag: event name → parent-method expression.
+     * Refreshed on every parent render (the binding may interpolate loop
+     * data). Consumed by emit().
+     *
+     * @var array<string, string>
+     */
+    protected array $nativeChildEventBindings = [];
+
+    /**
+     * Start a render frame's child bookkeeping: occurrence counters restart
+     * so unkeyed identities stay positional, and the seen-set is cleared
+     * for the end-of-frame unmount reconciliation.
+     */
+    private function beginChildComponentFrame(): void
+    {
+        $this->nativeChildTagOccurrences = [];
+        $this->nativeChildComponentsSeen = [];
+    }
+
+    /**
+     * Unmount and drop every child whose identity was present last frame
+     * but absent from the one just rendered.
+     */
+    private function endChildComponentFrame(): void
+    {
+        foreach ($this->nativeChildComponents as $identity => $child) {
+            if (! isset($this->nativeChildComponentsSeen[$identity])) {
+                $child->unmount();
+                unset($this->nativeChildComponents[$identity]);
+            }
+        }
+    }
+
+    /**
+     * Mount (or re-render) the child component registered for `$tag` at the
+     * collector's current tree position. Called by NativeElementCollector
+     * when a `<native:*>` tag resolves through the ComponentRegistry.
+     *
+     * Lifecycle per identity: new → instantiate, assign props, mount(),
+     * render; existing → assign fresh props (its own non-prop state
+     * persists), render. Attributes that don't match a public property on
+     * the child are ignored. Children never get a runLoop — they are
+     * render-and-event participants inside the owning screen's loop.
+     *
+     * @internal invoked by NativeElementCollector::mountComponent()
+     */
+    public function mountChildComponent(string $tag, array $attrs): void
+    {
+        $class = ComponentRegistry::resolve($tag);
+
+        if ($class === null) {
+            throw new \RuntimeException("No child component registered for <native:{$tag}>.");
+        }
+
+        // Identity: explicit `key` attribute wins; otherwise tag name +
+        // occurrence index within this parent's render.
+        $key = $attrs['key'] ?? null;
+        unset($attrs['key']);
+
+        if ($key !== null) {
+            $identity = $tag.'|key:'.$key;
+        } else {
+            $index = $this->nativeChildTagOccurrences[$tag] ?? 0;
+            $this->nativeChildTagOccurrences[$tag] = $index + 1;
+            $identity = $tag.'|i:'.$index;
+        }
+
+        // `@event="method(...)"` tag bindings arrive as `_event-*` attrs.
+        $bindings = [];
+        foreach ($attrs as $attrName => $value) {
+            if (str_starts_with($attrName, '_event-')) {
+                $bindings[substr($attrName, 7)] = (string) $value;
+                unset($attrs[$attrName]);
+            }
+        }
+
+        $child = $this->nativeChildComponents[$identity] ?? null;
+
+        // A reused identity now resolving to a different class (registry
+        // changed, or a keyed slot renders another component) is a fresh
+        // mount, not a prop update.
+        if ($child !== null && get_class($child) !== $class) {
+            $child->unmount();
+            $child = null;
+        }
+
+        $isNew = $child === null;
+
+        if ($isNew) {
+            $child = new $class;
+            $child->nativeCallbacks = new CallbackRegistry;
+            $child->nativeParentComponent = $this;
+            if ($this->nativeRouter !== null) {
+                $child->setRouter($this->nativeRouter);
+            }
+            $child->registerNativeEventListeners();
+            $this->nativeChildComponents[$identity] = $child;
+        }
+
+        $child->nativeChildEventBindings = $bindings;
+        $this->applyChildProps($child, $attrs);
+        $this->nativeChildComponentsSeen[$identity] = true;
+
+        if ($isNew) {
+            $child->mount();
+        }
+
+        $child->renderAsChild();
+    }
+
+    /**
+     * Render this component as a nested child: open a collector scope (so
+     * callbacks and further component tags belong to this instance), reset
+     * the per-frame computed cache, run render(), and reconcile this
+     * component's own children afterwards. Elements emit into the parent's
+     * tree at the mounting tag's position.
+     */
+    protected function renderAsChild(): void
+    {
+        $scope = NativeElementCollector::beginComponentScope($this->nativeCallbacks, $this);
+        $this->beginChildComponentFrame();
+        $this->resetComputedCache();
+
+        try {
+            $result = $this->render();
+
+            if ($result instanceof View) {
+                // The child-scope guard in fromView() emits in place.
+                $this->fromView($result);
+            } elseif ($result !== NativeElementCollector::scopeMarker()) {
+                // render() built a programmatic Element tree — attach it,
+                // pinned to this child's registry (toArray() propagates the
+                // pin to descendants) so its callbacks dispatch back here.
+                NativeElementCollector::attachElement(
+                    $result->ownCallbacks($this->nativeCallbacks)
+                );
+            }
+
+            $this->endChildComponentFrame();
+        } finally {
+            NativeElementCollector::endComponentScope($scope);
+        }
+    }
+
+    /**
+     * Assign the mounting tag's attributes to the child's declared props —
+     * a prop is any public non-static property matching the attribute name
+     * (exact, or camelCase of a kebab-case attr). Scalar values are coerced
+     * to the property's builtin type; unmatched attributes are ignored.
+     */
+    private function applyChildProps(NativeComponent $child, array $attrs): void
+    {
+        $reflect = new \ReflectionClass($child);
+
+        foreach ($attrs as $attrName => $value) {
+            // Collector-internal leftovers are never props.
+            if (str_starts_with($attrName, 'native-') || str_starts_with($attrName, '_')) {
+                continue;
+            }
+
+            $property = $this->matchChildProp($reflect, $attrName);
+
+            if ($property === null) {
+                continue;
+            }
+
+            $type = $property->getType();
+            if ($type instanceof \ReflectionNamedType && $type->isBuiltin() && is_scalar($value)) {
+                $value = match ($type->getName()) {
+                    'int' => (int) $value,
+                    'float' => (float) $value,
+                    'string' => (string) $value,
+                    'bool' => (bool) $value,
+                    default => $value,
+                };
+            }
+
+            $property->setValue($child, $value);
+        }
+    }
+
+    /** Resolve an attribute name to the child's public prop, if declared. */
+    private function matchChildProp(\ReflectionClass $reflect, string $attrName): ?\ReflectionProperty
+    {
+        foreach (array_unique([$attrName, Str::camel($attrName)]) as $candidate) {
+            if ($reflect->hasProperty($candidate)) {
+                $property = $reflect->getProperty($candidate);
+                if ($property->isPublic() && ! $property->isStatic()) {
+                    return $property;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The component owning a callback id: this instance when its own
+     * registry resolves it, else the first descendant that does. The global
+     * id counter guarantees ids never collide across components, so at most
+     * one owner exists; foreign/stale ids resolve to null and are dropped.
+     */
+    protected function findCallbackOwner(int $callbackId): ?NativeComponent
+    {
+        if ($callbackId !== 0
+            && isset($this->nativeCallbacks)
+            && $this->nativeCallbacks->resolve($callbackId) !== null) {
+            return $this;
+        }
+
+        foreach ($this->nativeChildComponents as $child) {
+            if (($owner = $child->findCallbackOwner($callbackId)) !== null) {
+                return $owner;
+            }
+        }
+
+        return null;
+    }
+
+    /** The screen at the root of this component's parent chain. */
+    protected function rootScreen(): NativeComponent
+    {
+        $component = $this;
+        while ($component->nativeParentComponent !== null) {
+            $component = $component->nativeParentComponent;
+        }
+
+        return $component;
+    }
+
+    /**
+     * Emit a component event up the ancestor chain (child → parent → … →
+     * screen). Delivery, per ancestor:
+     *
+     *   1. Tag-level: an `@event-name="method(...)"` attribute on THIS
+     *      component's mounting tag invokes that method on the direct
+     *      parent, with the expression's bound arguments first and the
+     *      emit arguments appended.
+     *   2. Method-level: a `#[On('event-name')]` listener on any ancestor
+     *      receives the emit arguments.
+     *
+     * The event bubbles to ALL listening ancestors — there is no
+     * stopPropagation. Emitting from a screen (no ancestors) is a no-op.
+     * The runloop re-renders after the dispatch that triggered the emit,
+     * so state changes in handlers paint on the next frame.
+     */
+    public function emit(string $event, mixed ...$args): void
+    {
+        $parent = $this->nativeParentComponent;
+
+        if ($parent !== null && isset($this->nativeChildEventBindings[$event])) {
+            $binding = CallbackRegistry::parse($this->nativeChildEventBindings[$event]);
+
+            if (method_exists($parent, $binding['method'])) {
+                $parent->{$binding['method']}(...[...$binding['args'], ...$args]);
+            }
+        }
+
+        for ($ancestor = $parent; $ancestor !== null; $ancestor = $ancestor->nativeParentComponent) {
+            $ancestor->invokeComponentEventListener($event, $args);
+        }
+    }
+
+    /**
+     * Fire this component's `#[On('event-name')]` listener for a component
+     * event, if one is declared. The attribute stores string names with the
+     * `native:` prefix (see Attributes\On), so both spellings are checked.
+     */
+    protected function invokeComponentEventListener(string $event, array $args): void
+    {
+        $method = $this->nativeEventListeners[$event]
+            ?? $this->nativeEventListeners['native:'.$event]
+            ?? null;
+
+        if ($method !== null && method_exists($this, $method)) {
+            $this->{$method}(...$args);
+        }
+    }
+
     // ── Event dispatch ──────────────────────────────
 
     protected function dispatch(array $event): void
     {
-        $callback = $this->nativeCallbacks->resolve($event['callback_id'] ?? 0);
+        $callbackId = (int) ($event['callback_id'] ?? 0);
+
+        // Child components own their callbacks. When this registry misses,
+        // walk the child instances (recursively) and dispatch on the owner
+        // — so `@tap` inside a child calls the child's method with the
+        // child as $this, and `native:model` syncs the child's property.
+        // Ids no component owns are dropped, exactly as before.
+        $owner = $this->findCallbackOwner($callbackId);
+
+        if ($owner === null) {
+            return;
+        }
+
+        if ($owner !== $this) {
+            $owner->dispatch($event);
+
+            return;
+        }
+
+        $callback = $this->nativeCallbacks->resolve($callbackId);
 
         if ($callback === null) {
             return;
