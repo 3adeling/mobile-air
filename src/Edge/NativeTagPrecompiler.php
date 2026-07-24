@@ -277,6 +277,21 @@ class NativeTagPrecompiler
         // `press`, `swipeDelete` before `swipe`) so they win the longer match.
         $value = preg_replace('/@(pressDown|pressUp|press|longPress|doubleTap|change|submit|dismiss|refresh|endReached|swipeDelete|swipe|pinchEnd|navigated)=/', '_$1=', $value);
 
+        // Any REMAINING `@name="..."` attribute is a child-component event
+        // binding — the tag-level half of `$this->emit()`:
+        //
+        //     <native:order-row :order="$o" @order-shipped="markShipped({{ $o->id }})" />
+        //
+        // Rewritten to a plain `_event-name` attribute (the attr parser
+        // rejects '@'), which mountChildComponent() strips off and maps to
+        // the parent method when the child emits that event. Runs AFTER
+        // every known directive pass, so only unknown `@x=` spellings reach
+        // it; the leading whitespace requirement keeps it in attribute
+        // position (an inline `a@b=` in text is left alone). On a plain
+        // element the attribute is stripped by the collector — components
+        // are resolved at runtime, so compile time can't tell the two apart.
+        $value = preg_replace('/(?<=\s)@([a-zA-Z][a-zA-Z0-9_-]*)=/', '_event-$1=', $value);
+
         // The attribute-region pattern below uses possessive quantifiers
         // (`*+`) to keep PCRE from catastrophically backtracking when a
         // long template has many tags and quoted attribute values. The
