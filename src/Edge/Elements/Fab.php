@@ -45,9 +45,22 @@ class Fab extends Pressable
     /** Icon size (dp) per size token. */
     private const ICON_SIZES = ['small' => 24, 'regular' => 24, 'large' => 36];
 
+    /**
+     * Guards the one-shot FAB composition. `class()` re-enters
+     * applyAttributes with parsed Tailwind attrs (we call it ourselves for
+     * the theme-token defaults below), so without the latch the default
+     * `bg-theme-primary` application would recurse forever.
+     */
+    private bool $composed = false;
+
     public function applyAttributes(array $attrs): void
     {
         parent::applyAttributes($attrs); // `:menu` support from Pressable
+
+        if ($this->composed) {
+            return;
+        }
+        $this->composed = true;
 
         foreach ([
             'bottom-offset' => 'bottomOffset',
