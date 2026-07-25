@@ -316,7 +316,9 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
+            $props = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -363,7 +365,7 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs);
+            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -406,7 +408,9 @@ class NativeElementCollector
         if (in_array($type, $builtinTypes, true)) {
             $layout = static::buildLayoutArray($attrs);
             $style = static::buildStyleArray($attrs);
-            $props = static::buildDarkProps($attrs) + static::buildAnimationProps($attrs);
+            $props = static::buildDarkProps($attrs)
+                + static::buildGradientProps($attrs)
+                + static::buildAnimationProps($attrs);
             $onPress = static::resolveOnPress($attrs);
             $onLongPress = static::resolveOnLongPress($attrs);
 
@@ -448,7 +452,7 @@ class NativeElementCollector
             $layout = $element->getLayout();
             $style = $element->getStyle();
             $props = $element->getResolvedProps(static::$callbacks);
-            $darkProps = static::buildDarkProps($attrs);
+            $darkProps = static::buildDarkProps($attrs) + static::buildGradientProps($attrs);
             if (! empty($darkProps)) {
                 $props = array_merge($props ?? [], $darkProps);
             }
@@ -696,6 +700,50 @@ class NativeElementCollector
         }
 
         return $props;
+    }
+
+    /**
+     * Build linear-gradient props from the `gradient` attribute key
+     * (`bg-gradient-to-* from-* via-* to-*`).
+     *
+     * These ride the props bag rather than NodeStyle because the style block
+     * is a fixed-layout region of the packed binary node — there is no room
+     * for a variable-length stop list without changing the wire format on
+     * both decoders. `dark_bg_color` takes the same route for the same reason.
+     *
+     * Emitted only when there is an axis AND at least two stops, so a partial
+     * declaration (a stray `from-black` with no direction) stays inert instead
+     * of painting something the author never asked for. When present, the
+     * native style modifiers draw this INSTEAD of `bg_color`.
+     *
+     * @return array{gradient_dx?: float, gradient_dy?: float, gradient_stops?: string}
+     */
+    public static function buildGradientProps(array $attrs): array
+    {
+        if (! isset($attrs['gradient']) || ! is_array($attrs['gradient'])) {
+            return [];
+        }
+
+        $gradient = $attrs['gradient'];
+        $direction = $gradient['direction'] ?? null;
+
+        $stops = array_values(array_filter([
+            $gradient['from'] ?? null,
+            $gradient['via'] ?? null,
+            $gradient['to'] ?? null,
+        ]));
+
+        if (! is_array($direction) || count($stops) < 2) {
+            return [];
+        }
+
+        return [
+            'gradient_dx' => (float) $direction[0],
+            'gradient_dy' => (float) $direction[1],
+            // Comma-joined so the stop list stays a single string prop; the
+            // native side splits it. Two or three `#AARRGGBB` entries.
+            'gradient_stops' => implode(',', $stops),
+        ];
     }
 
     /**
@@ -1155,6 +1203,13 @@ class NativeElementCollector
         $darkProps = static::buildDarkProps($attrs);
         if (! empty($darkProps)) {
             $element->mergeDarkProps($darkProps);
+        }
+
+        // Gradient props — same central `setProp` path as animation below, so
+        // `bg-gradient-to-*` works on every element type without per-element
+        // wiring.
+        foreach (static::buildGradientProps($attrs) as $key => $value) {
+            $element->setProp($key, $value);
         }
 
         // Animation props — push through `setProp` so builtin elements
