@@ -2,6 +2,7 @@
 
 namespace Native\Mobile\Testing;
 
+use Illuminate\Support\Traits\Macroable;
 use Native\Mobile\Edge\CallbackRegistry;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Edge\NativeDumpException;
@@ -46,6 +47,18 @@ use PHPUnit\Framework\TestCase;
  */
 class TestableComponent
 {
+    // Plugins register element-specific test vocabulary here (a date plugin's
+    // pickDate(), a chart plugin's assertSeries(), ...). FakeBridge macros
+    // can't serve UI elements: the bridge holds no reference back to the
+    // component, so a macro there can't read the tree or fire node events.
+    //
+    // Aliased because this class defines its own __call for FakeBridge
+    // forwarding — a class method beats a trait method, so without the alias
+    // the trait's __call would never run and macros would be invisible.
+    use Macroable {
+        __call as macroCall;
+    }
+
     // Wire event type codes — must match EventType on the native side.
     public const EVENT_PRESS = 0;
 
@@ -1254,6 +1267,13 @@ class TestableComponent
      */
     public function __call(string $method, array $arguments): mixed
     {
+        // Component-level macros win over bridge forwarding — they're the
+        // more specific registration, and a plugin naming one after a bridge
+        // method means it wants the component behaviour.
+        if (static::hasMacro($method)) {
+            return $this->macroCall($method, $arguments);
+        }
+
         if (FakeBridge::hasMacro($method) || method_exists($this->bridge, $method)) {
             $result = $this->bridge->{$method}(...$arguments);
 
