@@ -1,6 +1,10 @@
 <?php
 
+use Native\Mobile\Edge\Components\EdgeComponent;
+use Native\Mobile\Edge\Components\Navigation\TopBar;
+use Native\Mobile\Edge\Edge;
 use Native\Mobile\Edge\NativeTagPrecompiler;
+use Native\Mobile\Http\Middleware\RenderEdgeComponents;
 
 beforeEach(function () {
     $this->precompiler = new NativeTagPrecompiler;
@@ -252,4 +256,47 @@ it('interpolates array access inside {{ }} in attribute values', function () {
     $result = ($this->precompiler)('<native:image :src="$listing[\'imageUrl\']" />');
 
     expect($result)->toContain("'src' => (\$listing['imageUrl'])");
+});
+
+// ── Chrome tags compile through the collector (Gen-B Edge bridge is gone) ──
+
+it('compiles chrome container tags into collector open/close calls', function () use ($collector) {
+    foreach (['top-bar', 'bottom-nav', 'side-nav', 'side-nav-group'] as $tag) {
+        $type = str_replace('-', '_', $tag);
+        $result = ($this->precompiler)("<native:{$tag} title=\"X\">body</native:{$tag}>");
+
+        expect($result)->toContain("{$collector}::open('{$type}',")
+            ->toContain("{$collector}::close();")
+            ->not->toContain('Edge::');
+    }
+});
+
+it('compiles chrome leaf tags into collector leaf calls', function () use ($collector) {
+    foreach (['top-bar-action', 'bottom-nav-item', 'side-nav-item', 'side-nav-header'] as $tag) {
+        $type = str_replace('-', '_', $tag);
+        $result = ($this->precompiler)("<native:{$tag} id=\"x\" />");
+
+        expect($result)->toContain("{$collector}::leaf('{$type}',")
+            ->not->toContain('Edge::');
+    }
+});
+
+it('compiles a self-closing fab into a collector leaf', function () use ($collector) {
+    $result = ($this->precompiler)('<native:fab icon="add" @tap="create" />');
+
+    expect($result)->toContain("{$collector}::leaf('fab',")
+        ->toContain("'_press' => 'create'");
+});
+
+it('preserves the boolean custom attribute on chrome tags', function () {
+    $result = ($this->precompiler)('<native:top-bar custom title="Drawn">x</native:top-bar>');
+
+    expect($result)->toContain("'custom' => true");
+});
+
+it('has fully removed the Gen-B Edge bridge classes', function () {
+    expect(class_exists(Edge::class))->toBeFalse()
+        ->and(class_exists(EdgeComponent::class))->toBeFalse()
+        ->and(class_exists(TopBar::class))->toBeFalse()
+        ->and(class_exists(RenderEdgeComponents::class))->toBeFalse();
 });

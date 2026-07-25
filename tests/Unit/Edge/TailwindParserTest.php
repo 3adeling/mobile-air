@@ -689,3 +689,67 @@ it('keeps positive spacing untouched', function () {
     expect(TailwindParser::parse('mt-4'))->toBe(['marginTop' => 16]);
     expect(TailwindParser::parse('right-8'))->toBe(['positionRight' => 32]);
 });
+
+// ── Linear gradients ────────────────────────────────
+
+it('parses a gradient axis and its colour stops into one gradient key', function () {
+    expect(TailwindParser::parse('bg-gradient-to-t from-black via-black/10 to-transparent'))
+        ->toBe(['gradient' => [
+            'direction' => [0.0, -1.0],
+            'from' => '#000000',
+            'via' => '#1A000000',
+            'to' => '#00000000',
+        ]]);
+});
+
+it('accepts the tailwind v4 bg-linear spelling and every direction', function () {
+    expect(TailwindParser::parse('bg-linear-to-br from-black to-white')['gradient']['direction'])
+        ->toBe([1.0, 1.0]);
+    expect(TailwindParser::parse('bg-gradient-to-l from-black to-white')['gradient']['direction'])
+        ->toBe([-1.0, 0.0]);
+});
+
+it('merges gradient classes regardless of the order they appear in', function () {
+    // The parsed array's KEY order follows the class order, so compare the
+    // emitted props, where stops are normalised to from → via → to.
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('to-transparent from-black bg-gradient-to-t')))
+        ->toBe(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-t from-black to-transparent')));
+});
+
+it('resolves theme tokens as gradient stops', function () {
+    TailwindParser::setThemeResolver(fn (string $token) => $token === 'primary' ? '#9BE500' : null);
+
+    expect(TailwindParser::parse('bg-gradient-to-t from-theme-primary to-transparent')['gradient']['from'])
+        ->toBe('#9BE500');
+
+    TailwindParser::setThemeResolver(null);
+});
+
+it('does not let a gradient swallow the plain bg- branch', function () {
+    expect(TailwindParser::parse('bg-black'))->toBe(['bg' => '#000000']);
+});
+
+it('emits gradient props only when there is an axis and two stops', function () {
+    $complete = TailwindParser::parse('bg-gradient-to-t from-black to-transparent');
+    expect(NativeElementCollector::buildGradientProps($complete))->toBe([
+        'gradient_dx' => 0.0,
+        'gradient_dy' => -1.0,
+        'gradient_stops' => '#000000,#00000000',
+    ]);
+
+    // A stop with no axis, and an axis with one stop, are both inert.
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('from-black to-white')))->toBe([]);
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-t from-black')))->toBe([]);
+    expect(NativeElementCollector::buildGradientProps(TailwindParser::parse('bg-gradient-to-nowhere from-black to-white')))->toBe([]);
+});
+
+// ── Inset shorthands ────────────────────────────────
+
+it('expands inset shorthands to the position edges', function () {
+    expect(TailwindParser::parse('inset-0'))->toBe([
+        'positionTop' => 0, 'positionRight' => 0, 'positionBottom' => 0, 'positionLeft' => 0,
+    ]);
+    expect(TailwindParser::parse('inset-x-2'))->toBe(['positionLeft' => 8, 'positionRight' => 8]);
+    expect(TailwindParser::parse('inset-y-4'))->toBe(['positionTop' => 16, 'positionBottom' => 16]);
+    expect(TailwindParser::parse('inset-bogus'))->toBe([]);
+});

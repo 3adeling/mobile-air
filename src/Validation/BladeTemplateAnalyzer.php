@@ -82,7 +82,8 @@ class BladeTemplateAnalyzer
             // Normalize: kebab-case to snake_case
             $elementType = str_replace('-', '_', $tagName);
 
-            // Skip navigation chrome elements (handled by EdgeComponentAnalyzer)
+            // Skip navigation chrome elements (attribute surface differs
+            // per bar; no per-element validation rules for them here)
             if ($this->isNavigationElement($elementType)) {
                 continue;
             }

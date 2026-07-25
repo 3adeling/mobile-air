@@ -9,6 +9,7 @@ use Native\Mobile\Edge\NativeRouter;
 use Native\Mobile\Edge\NavigationIntent;
 use Native\Mobile\Edge\TailwindParser;
 use Native\Mobile\Edge\Transition;
+use Native\Mobile\Platform;
 use Native\Mobile\Support\NativeCallbacks;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\TestCase;
@@ -157,6 +158,11 @@ class TestableComponent
         // previous test's platform); the parse cache isn't platform-keyed.
         TailwindParser::setPlatform($platform);
         TailwindParser::clearCache();
+
+        // Same for platform-resolved icons (IconResolver & friends read
+        // Platform::current()) — `platform:` means "pretend we're on that
+        // OS" everywhere, not just for Tailwind variants.
+        Platform::set($platform);
 
         $component = new $componentClass;
 
@@ -1384,23 +1390,52 @@ class TestableComponent
      * Resolve a target to a callback id from the last render. Accepts a
      * full expression ("save('draft')"), a bare method name ('save'), or
      * a model-bound property name ('query' → __syncProperty binding).
+     * Searches the screen's registry first, then every mounted child
+     * component's — dispatch routes the event to the owning instance.
      */
     protected function callbackIdFor(string $target): ?int
     {
-        $registry = $this->callbacks();
-
-        if (($id = $registry->lookup($target)) !== null) {
-            return $id;
-        }
-
-        foreach ($registry->expressions() as $expression => $id) {
-            if (str_starts_with($expression, $target.'(')
-                || str_starts_with($expression, "__syncProperty('{$target}'")) {
+        foreach ($this->componentRegistries() as $registry) {
+            if (($id = $registry->lookup($target)) !== null) {
                 return $id;
+            }
+
+            foreach ($registry->expressions() as $expression => $id) {
+                if (str_starts_with($expression, $target.'(')
+                    || str_starts_with($expression, "__syncProperty('{$target}'")) {
+                    return $id;
+                }
             }
         }
 
         return null;
+    }
+
+    /**
+     * The screen's CallbackRegistry plus every mounted child component's,
+     * breadth-first down the child tree.
+     *
+     * @return array<int, CallbackRegistry>
+     */
+    protected function componentRegistries(): array
+    {
+        return $this->scoped(function () {
+            /** @var NativeComponent $this */
+            $registries = [];
+            $queue = [$this];
+
+            while ($queue !== []) {
+                $component = array_shift($queue);
+                if (isset($component->nativeCallbacks)) {
+                    $registries[] = $component->nativeCallbacks;
+                }
+                foreach ($component->nativeChildComponents as $child) {
+                    $queue[] = $child;
+                }
+            }
+
+            return $registries;
+        });
     }
 
     /** Press callback id of the node with the given ref, if any. */
