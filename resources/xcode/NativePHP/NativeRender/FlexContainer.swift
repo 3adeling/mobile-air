@@ -280,6 +280,7 @@ struct FlexContainer: Layout {
         var maxCross: CGFloat = 0
         var hypotheticalMains = [Int: CGFloat]()
         var totalGrow: CGFloat = 0
+        var totalShrink: CGFloat = 0
 
         for i in cache.flowIndices {
             let info = cache.childInfos[i]
@@ -308,6 +309,7 @@ struct FlexContainer: Layout {
             hypotheticalMains[i] = childMain
             totalMain += childMain + mainMargin(info)
             totalGrow += grow
+            totalShrink += info.flexShrink
             maxCross = max(maxCross, crossSize(ideal) + crossMargin(info))
         }
 
@@ -353,6 +355,73 @@ struct FlexContainer: Layout {
                     if newCross > maxCross {
                         maxCross = newCross
                     }
+                }
+            }
+        }
+
+        // Phase B2: the mirror image — overflow with flex-shrink children.
+        // `placeSubviews` has always shrunk them; `sizeThatFits` did not, so a
+        // container reported its PRE-shrink main size to the parent. Inside a
+        // scroll view (which permits overflow) that reported width won, and
+        // e.g. a long chat bubble ran off-screen on one line instead of
+        // wrapping — Android, whose measure pass shrinks, wrapped correctly.
+        // Same ratio rule as placeSubviews so both passes agree.
+        if proposedMain.isFinite && totalShrink > 0 {
+            let remaining = proposedMain - totalMain
+            if remaining < 0 {
+                let deficit = -remaining
+                // CSS weights shrink by SCALED base size — `shrink × base` —
+                // not by shrink alone. It matters because flex-shrink defaults
+                // to 1 on every child: a row of [bubble, spacer] has
+                // totalShrink 2, so an unweighted ratio hands half the deficit
+                // to the spacer, whose base is already 0. That half evaporates
+                // (`max(0, 0 - x)`) and the bubble shrinks only halfway —
+                // measured 1113pt against a 386pt proposal. Weighting gives the
+                // zero-base spacer zero reduction and the bubble the full
+                // deficit.
+                var totalWeighted: CGFloat = 0
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    totalWeighted += info.flexShrink * hypotheticalMains[i, default: 0]
+                }
+                if totalWeighted > 0 {
+                    for i in cache.flowIndices {
+                        let info = cache.childInfos[i]
+                        guard info.flexShrink > 0 else { continue }
+                        let weight = info.flexShrink * hypotheticalMains[i, default: 0]
+                        let reduction = deficit * (weight / totalWeighted)
+                        hypotheticalMains[i, default: 0] = max(0, hypotheticalMains[i, default: 0] - reduction)
+                    }
+                }
+
+                // Re-measure the shrunk children at their reduced main: text
+                // that now wraps reports a taller cross size, which is what
+                // makes the container tall enough to show every line.
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    let reducedMain = hypotheticalMains[i, default: 0]
+                    let crossAvail = proposedCross.isFinite ? proposedCross - crossMargin(info) : nil
+                    let proposal: ProposedViewSize
+                    if isRow {
+                        proposal = ProposedViewSize(width: reducedMain, height: crossAvail)
+                    } else {
+                        proposal = ProposedViewSize(width: crossAvail, height: reducedMain)
+                    }
+                    let measured = subviews[i].sizeThatFits(proposal)
+                    cache.childInfos[i].idealSize = measured
+                    let newCross = crossSize(measured) + crossMargin(info)
+                    if newCross > maxCross {
+                        maxCross = newCross
+                    }
+                }
+
+                // Recompute from the shrunk values so `finalMain` below reports
+                // the fitted size rather than the original overflow.
+                totalMain = gaps
+                for i in cache.flowIndices {
+                    totalMain += hypotheticalMains[i, default: 0] + mainMargin(cache.childInfos[i])
                 }
             }
         }
@@ -452,12 +521,23 @@ struct FlexContainer: Layout {
                 }
             }
         } else if remaining < 0 && totalShrink > 0 {
-            // Shrink: reduce by flex_shrink ratio
+            // Shrink: reduce by CSS's SCALED shrink factor (`shrink × base`),
+            // matching the measure pass. Weighting matters because shrink
+            // defaults to 1 everywhere — an unweighted ratio sends part of the
+            // deficit to zero-base children (spacers), where `max(0, …)`
+            // discards it and the real content shrinks short of fitting.
             let deficit = -remaining
+            var totalWeighted: CGFloat = 0
             for i in cache.flowIndices {
                 let info = cache.childInfos[i]
-                if info.flexShrink > 0 {
-                    let reduction = deficit * (info.flexShrink / totalShrink)
+                guard info.flexShrink > 0 else { continue }
+                totalWeighted += info.flexShrink * childMains[i]
+            }
+            if totalWeighted > 0 {
+                for i in cache.flowIndices {
+                    let info = cache.childInfos[i]
+                    guard info.flexShrink > 0 else { continue }
+                    let reduction = deficit * ((info.flexShrink * childMains[i]) / totalWeighted)
                     childMains[i] = max(0, childMains[i] - reduction)
                 }
             }
