@@ -49,27 +49,14 @@ enum UIFunctions {
     /// Returns:
     ///   - success: boolean
     class SetBackground: BridgeFunction {
-        /// The scene's windows MINUS UIKit's keyboard helper windows
-        /// (UITextEffectsWindow / UIRemoteKeyboardWindow). Those overlay
-        /// the app window at a higher level and exist from the first time
-        /// a keyboard is shown until the process dies — painting them
-        /// makes the whole screen an opaque sheet of the background color
-        /// while the app keeps rendering (and receiving taps) underneath.
-        private func appWindows(in windowScene: UIWindowScene) -> [UIWindow] {
-            windowScene.windows.filter { window in
-                let className = String(describing: type(of: window))
-                return !className.contains("TextEffects") && !className.contains("RemoteKeyboard")
-            }
-        }
-
         func execute(parameters: [String: Any]) throws -> [String: Any] {
             let colorStr = parameters["color"] as? String ?? ""
             guard !colorStr.isEmpty else {
-                DispatchQueue.main.async { [self] in
+                DispatchQueue.main.async {
                     WindowBackgroundState.shared.color = nil
                     for scene in UIApplication.shared.connectedScenes {
                         guard let windowScene = scene as? UIWindowScene else { continue }
-                        for window in appWindows(in: windowScene) {
+                        for window in windowScene.windows {
                             window.backgroundColor = nil
                         }
                     }
@@ -82,14 +69,13 @@ enum UIFunctions {
                 return ["success": false, "error": "Invalid color"]
             }
 
-            DispatchQueue.main.async { [self] in
+            DispatchQueue.main.async {
                 WindowBackgroundState.shared.color = Color(uiColor)
                 // Also paint the UIKit windows so regions SwiftUI never
-                // covers (keyboard underlap, rotation gaps) match — but
-                // never the keyboard helper windows (see appWindows).
+                // covers (keyboard underlap, rotation gaps) match.
                 for scene in UIApplication.shared.connectedScenes {
                     guard let windowScene = scene as? UIWindowScene else { continue }
-                    for window in appWindows(in: windowScene) {
+                    for window in windowScene.windows {
                         window.backgroundColor = uiColor
                     }
                 }
