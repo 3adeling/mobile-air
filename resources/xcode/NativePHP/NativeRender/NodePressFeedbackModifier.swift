@@ -9,16 +9,10 @@ import SwiftUI
 ///   - `press-opacity`      — opacity while pressed (e.g. 0.7).
 ///   - `press-translate-y`  — Y offset while pressed (points).
 ///
-/// Press detection uses SwiftUI's button recognizer
-/// (`_onButtonGesture(pressing:)`) — the same one `Button` uses — so a
-/// scroll view treats the element like a button: a pan that starts on it
-/// still scrolls, and the press highlight only engages once the system
-/// decides the touch is a press, not a drag. The previous implementation
-/// (zero-distance `DragGesture` via `simultaneousGesture`) claimed every
-/// touch immediately, which on iOS 18 prevents an enclosing ScrollView
-/// from ever starting its pan — screens whose content is mostly
-/// pressables became near-unscrollable. The tap itself still fires via
-/// the separate `@tap` handler; `perform` here is deliberately empty.
+/// Press detection uses a zero-distance `DragGesture` attached via
+/// `simultaneousGesture` so it composes with the existing tap and
+/// long-press handlers — the visual feedback happens immediately on
+/// press-in, `@tap` still fires on tap, and scrolls aren't blocked.
 ///
 /// Multiplies / adds onto the base `NodeAnimationModifier` transforms,
 /// so `<column :scale="1.2" :press-scale="0.95">` shows a base scale
@@ -53,9 +47,15 @@ struct NodePressFeedbackModifier: ViewModifier {
                 .opacity(opacity)
                 .offset(y: ty)
                 .animation(.spring(response: 0.22, dampingFraction: 0.7), value: isPressed)
-                ._onButtonGesture(pressing: { pressing in
-                    isPressed = pressing
-                }, perform: {})
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in
+                            if !isPressed { isPressed = true }
+                        }
+                        .onEnded { _ in
+                            isPressed = false
+                        }
+                )
         )
     }
 }
